@@ -1,0 +1,272 @@
+import torch, re, json, time
+from utils import utils
+from .utils import Task
+from .retrieval import Retriever
+
+class Inferrer:
+    def __init__(self, retriever, model, tokenizer, prompts_path, tools_path):
+        self.retriever = retriever
+        self.model = model
+        self.tokenizer = tokenizer
+        self.prompts_path = prompts_path
+        self.tools_path = tools_path
+        self.base_path = retriever.base_path
+    
+    @classmethod    
+    def create_with_retriever(cls,  base_path, wiki_path, embedder, index, metadata, model, tokenizer, prompts_path, tools_path):
+        return cls(Retriever(base_path, wiki_path, embedder, index, metadata), model, tokenizer, prompts_path, tools_path) 
+      
+    #################################### retrieval ####################################  
+      
+    def retrieve_init(self, data, use_tqdm=True, logs=True):
+        query_count= 0
+        error_count= 0
+        for i in utils.cond_tqdm(range(len(data)), use_tqdm=use_tqdm, desc=f"init_ret"):
+            try:
+                value = data[i][f"question"]
+                query_count += 1
+            except KeyError:
+                continue
+            else:
+                context_add = self.retriever.retrieve_info_rag([value])
+                flat_context_add = [item for sublist in context_add for item in sublist]
+                result = [[d["title"], d["full_text"]] for d in flat_context_add]
+                data[i][f"context"] = result
+        if logs:
+            print(f"init total queries: {query_count}\nerrors: {error_count}")
+        return data
+    
+    def retrieve_info_iter(self, data, iteration, use_tqdm=True, logs=True):
+        query_count= 0
+        error_count= 0
+        for i in utils.cond_tqdm(range(len(data)), use_tqdm=use_tqdm, desc=f"iter_{iteration}_2_ret"):
+            try:
+                value = data[i][f"nothink_query_iteration_{iteration}"]
+                query_count += 1
+            except KeyError:
+                continue
+            subqueries, error_desc = utils.extract_subqueries(value)
+            if(subqueries == None):
+                error_count += 1
+            else:
+                context_add = self.retriever.retrieve_info_rag(subqueries)
+                flat_context_add = [item for sublist in context_add for item in sublist]
+                result = [[d["title"], d["full_text"]] for d in flat_context_add]
+                data[i][f"nothink_retrieve_iteration_{iteration}"] = result
+        if logs:
+            print(f"{iteration} total queries: {query_count}\nerrors: {error_count}")
+        return data
+    
+    #################################### generation #################################### 
+    
+    def one_hop(self, query, context, max_new_tokens=128, thinking=False, use_cache=True):
+        prompt = self._get_prompts(Task.SHORT_ANSWER, query, context)
+        response, thought = self._call_llm(prompt, max_new_tokens=max_new_tokens, enable_thinking=thinking, skip_special_tokens=True, use_cache=use_cache)
+        return response
+    
+    def info_check_iter(self, data, iteration, use_cache = True, add_onehop = False, max_new_tokens=128, use_tqdm = True):
+        prompt_list = []
+        response_list = []
+        col_name = f"nothink_gen_iteration_{iteration}"
+        for i in utils.cond_tqdm(range(0, len(data), 1), use_tqdm = use_tqdm, desc=f"iter_{iteration}_0_gen"):
+            selected = data[i]
+            query = selected["question"]
+            context = selected["context"]
+            if not (iteration == 0):
+                try:
+                    for k in range(0, iteration):
+                        context = context.copy()
+                        context.extend(selected[f"nothink_retrieve_iteration_{k}"])
+                except KeyError:
+                    # TODO do caching before this
+                    continue
+
+            tools = self._get_tools(Task.INFO_CHECK)
+            prompt = self._get_prompts(Task.INFO_CHECK, query, context)
+            prompt_list.append(prompt)
+
+            predicted_m, _ = self._call_llm(prompt, tools, max_new_tokens, enable_thinking=False, skip_special_tokens=False, use_cache=use_cache)
+            response_list.append(predicted_m)
+
+            if add_onehop:
+                predicted_o = self.one_hop(query, context, use_cache=use_cache)
+
+            try:
+                data[i][col_name] = predicted_m
+                if add_onehop:
+                    data[i]["onehop"] = predicted_o
+
+            except Exception as e:
+                print(f"exception at {i}")
+        return data, prompt_list, response_list
+    
+    def _get_tools(self, task):
+        return utils.get_tools(self.base_path, self.tools_path, task)
+        
+    def _get_prompts(self, task, query, context = None):
+        return utils.get_prompts(self.base_path, self.prompts_path, task, query, context)
+    
+    def _check_done(self, response):
+        return "information_is_sufficient" in response
+    
+    def _call_llm(self, prompt, tools = None, max_new_tokens=128, skip_special_tokens=False, enable_thinking=False, use_cache = True):
+        text = self.tokenizer.apply_chat_template(
+            prompt,
+            tools = tools,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking = enable_thinking)
+
+        inputs = self.tokenizer(text, return_tensors="pt").to("cuda")
+
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            # do_sample=True,
+            # top_k=50,
+            # top_p=0.95,
+            # temperature=0.6,
+            do_sample=False,
+            top_k=None,
+            top_p=None,
+            temperature=None,
+            pad_token_id=self.tokenizer.eos_token_id,
+            use_cache = use_cache
+        )
+        # If still thinking
+        if enable_thinking and (151668 not in outputs[0]):
+            extended_ids = torch.cat([outputs[0], torch.tensor([151668], device="cuda")])
+            outputs = self.model.generate(
+                input_ids=extended_ids.unsqueeze(0),
+                max_new_tokens=25,
+                do_sample=False,
+                top_k=None,
+                top_p=None,
+                temperature=None,
+                pad_token_id=self.tokenizer.eos_token_id,
+                use_cache = use_cache
+            )
+        if self.tokenizer.eos_token_id not in outputs[0]:
+            outputs = self.model.generate(
+                input_ids=extended_ids.unsqueeze(0),
+                max_new_tokens=25,
+                do_sample=False,
+                top_k=None,
+                top_p=None,
+                temperature=None,
+                pad_token_id=self.tokenizer.eos_token_id,
+                use_cache = use_cache
+            )
+
+        output_ids = outputs[0]
+        full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=skip_special_tokens)
+
+        input_len = inputs["input_ids"].shape[-1]
+        generated_ids = outputs[0][input_len:]
+
+        try:
+            end_thinking_index = generated_ids.tolist().index(151668)
+            thought_ids = generated_ids[:end_thinking_index+1]
+            generated_ids = generated_ids[end_thinking_index+1:]
+            thought = self.tokenizer.decode(thought_ids, skip_special_tokens=skip_special_tokens)
+        except ValueError:
+            thought = None
+
+        completion = self.tokenizer.decode(generated_ids, skip_special_tokens=skip_special_tokens)
+        return completion, thought
+    
+    #################################### subquery ####################################
+    
+    def infer_subquery_iter(self, data, iteration, max_new_tokens=128, use_tqdm=True):
+        prompt_list = []
+        response_list = []
+        for i in utils.cond_tqdm(range(0, len(data), 1), use_tqdm=use_tqdm, desc=f"iter_{iteration}_1_2q"):
+            selected = data[i]
+            query = selected["question"]
+            context = selected["context"]
+            try:
+                prev_response = selected[f"nothink_gen_iteration_{iteration}"]
+            except KeyError:
+                continue
+
+            if(self._check_done(prev_response)):
+                continue
+            tools = self._get_tools(Task.SUBQUERY_CONSTRUCT)
+            prompt = self._get_prompts(Task.SUBQUERY_CONSTRUCT, query, context)
+            prompt_list.append(prompt)
+            subquery = self._call_llm(prompt, tools=tools, max_new_tokens=max_new_tokens)[0]
+            response_list.append(subquery)
+
+            try:
+                data[i][f"nothink_query_iteration_{iteration}"] = subquery
+            except Exception as e:
+                print(f"exception at {i}")
+        return data, prompt_list, response_list
+    
+    #################################### main ####################################
+        
+    def finalize_data(self, data, iterations = 3):
+        tool_pattern = re.compile(
+            r">\s*(\{.*?\})\s*<",
+            re.DOTALL
+        )
+
+        for d in data:
+            d[f"multihop{iterations}"] = ""
+            d["error"] = ""
+
+            # check from iteration_3 down to iteration_0
+            for i in range(iterations, -1, -1):
+                key = f"nothink_gen_iteration_{i}"
+                query_key= f"nothink_query_iteration_{i}"
+                if key in d and isinstance(d[key], str):
+                    content = d[key]
+
+                    if query_key in d:
+                        d["error"] = "query"
+                        break
+
+                    if "information_not_sufficient" in content:
+                        d["error"] = "info"
+                        break
+
+                    match = tool_pattern.search(content)
+                    if not match:
+                        d["error"] = "format"
+                    else:
+                        try:
+                            tool_call = json.loads(match.group(1))
+                            name = tool_call.get("name", "")
+                            args = tool_call.get("arguments", {})
+
+                            if name == "information_is_sufficient":
+                                d[f"multihop{iterations}"] = args.get("answer", "")
+                            else:
+                                d["error"] = "format"
+                        except Exception:
+                            d["error"] = "format"
+
+                    break  # stop after first valid key
+        return data
+    
+    def infer(self, data, iterations=3, start_iter=0, use_tqdm=False, logs=False, add_onehop=False, calculate_time=True):
+        
+        timer_start = time.time()
+        if start_iter == 0:
+            data = self.retrieve_init(data, use_tqdm=use_tqdm, logs=logs)
+        for i in range(start_iter, iterations):
+            data, _, __ = self.info_check_iter(data, i, add_onehop=(add_onehop and i == 0), use_tqdm=use_tqdm)
+            data, _, __ = self.infer_subquery_iter(data, i, use_tqdm=use_tqdm)
+            data = self.retrieve_info_iter(data, i, use_tqdm=use_tqdm, logs=logs)
+
+        data, _, __ = self.info_check_iter(data, iterations, use_tqdm=use_tqdm)
+        data = self.finalize_data(data, iterations)
+        timer_end = time.time()
+        
+        elapsed_time = timer_end - timer_start
+        hours = int(elapsed_time // 3600)
+        minutes = int(elapsed_time % 3600 // 60)
+        seconds = int(elapsed_time % 60)
+        if calculate_time:
+            print(f"inference execution time: {hours}h {minutes}m {seconds}s")
+        return data

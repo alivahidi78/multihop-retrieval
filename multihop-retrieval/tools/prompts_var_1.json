@@ -1,0 +1,32 @@
+{
+    "INFO_CHECK": [
+        {
+            "role": "system",
+            "content": "Consider the user's query and think about the information you need to provide a response.Consider if the information provided in the context is enough to formulate your answer. If it is, use the information_is_sufficient tool. If the information is not enough use the information_not_sufficient tool.\nContext: $context\n"
+        },
+        {
+            "role": "user",
+            "content": "$query"
+        }
+    ],
+    "SUBQUERY_CONSTRUCT": [
+        {
+            "role": "system",
+            "content": "Based on the given context and the user's query, generate specific follow-up questions or search queries that would help retrieve the missing information. Use the retrieve_info tool with these follow-up questions to make the retrieval.\nContext: $context\n"
+        },
+        {
+            "role": "user",
+            "content": "$query"
+        }
+    ],
+    "SHORT_ANSWER": [
+        {
+            "role": "system",
+            "content": "Respond to the user's query based on the provided context. Keep your response to one word or expression.\nContext: $context\n"
+        },
+        {
+            "role": "user",
+            "content": "$query"
+        }
+    ]
+}
