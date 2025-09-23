@@ -1,5 +1,5 @@
 import torch, re, json, time
-from utils import utils
+from multihop_retrieval.utils import utils
 from .utils import Task
 from .retrieval import Retriever
 
