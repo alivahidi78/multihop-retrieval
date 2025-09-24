@@ -1,5 +1,7 @@
 .env
 slurm_logs/
+results/
+logs/
 *.slurm
 *.ipynb
 

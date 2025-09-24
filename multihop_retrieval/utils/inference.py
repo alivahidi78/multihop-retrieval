@@ -1,10 +1,12 @@
-import torch, re, json, time
+import torch, re, json, time, copy
+from transformers.generation.configuration_utils import GenerationConfig
 from multihop_retrieval.utils import utils
 from .utils import Task
 from .retrieval import Retriever
 
 class Inferrer:
     def __init__(self, retriever, model, tokenizer, prompts_path, tools_path):
+        self.input_preparation_func = None
         self.retriever = retriever
         self.model = model
         self.tokenizer = tokenizer
@@ -59,12 +61,13 @@ class Inferrer:
     
     #################################### generation #################################### 
     
-    def one_hop(self, query, context, max_new_tokens=128, thinking=False, use_cache=True):
+    def one_hop(self, query, context, generation_config, thinking=False):
         prompt = self._get_prompts(Task.SHORT_ANSWER, query, context)
-        response, thought = self._call_llm(prompt, max_new_tokens=max_new_tokens, enable_thinking=thinking, skip_special_tokens=True, use_cache=use_cache)
-        return response
+        llm_res = self._call_llm(generation_config, prompt, enable_thinking=thinking, skip_special_tokens=True)
+        #TODO deal with thought
+        return llm_res["completion_decoded"]
     
-    def info_check_iter(self, data, iteration, use_cache = True, add_onehop = False, max_new_tokens=128, use_tqdm = True):
+    def info_check_iter(self, data, iteration, generation_config, add_onehop = False, ignore_ids=False, use_tqdm = True):
         prompt_list = []
         response_list = []
         col_name = f"nothink_gen_iteration_{iteration}"
@@ -85,17 +88,40 @@ class Inferrer:
             prompt = self._get_prompts(Task.INFO_CHECK, query, context)
             prompt_list.append(prompt)
 
-            predicted_m, _ = self._call_llm(prompt, tools, max_new_tokens, enable_thinking=False, skip_special_tokens=False, use_cache=use_cache)
+            llm_res = self._call_llm(generation_config, prompt, tools, enable_thinking=False, skip_special_tokens=False)
+            predicted_m = llm_res["completion_decoded"]
+            # TODO deal with thought
             response_list.append(predicted_m)
 
             if add_onehop:
-                predicted_o = self.one_hop(query, context, use_cache=use_cache)
+                # TODO deal with onehop training
+                predicted_o = self.one_hop(query, context, generation_config)
 
             try:
                 data[i][col_name] = predicted_m
+                if not ignore_ids:
+                    if "prompts" not in data[i].keys():
+                        data[i]["prompts"] = dict()
+                    if "prompt_ids" not in data[i].keys():
+                        data[i]["prompt_ids"] = dict()
+                    if "prompt_mask" not in data[i].keys():
+                        data[i]["prompt_mask"] = dict()
+                    if "thought_and_completion_ids" not in data[i].keys():
+                        data[i]["thought_and_completion_ids"] = dict()
+                    data[i]["prompt_ids"].update({
+                        f"{iteration}_info": llm_res["prompt_ids"],
+                    })                    
+                    data[i]["prompts"].update({
+                        f"{iteration}_info": llm_res["prompt"],
+                    })
+                    data[i]["prompt_mask"].update({
+                        f"{iteration}_info": llm_res["prompt_mask"],
+                    })
+                    data[i]["thought_and_completion_ids"].update({
+                        f"{iteration}_info": llm_res["thought_and_completion_ids"],
+                    })
                 if add_onehop:
                     data[i]["onehop"] = predicted_o
-
             except Exception as e:
                 print(f"exception at {i}")
         return data, prompt_list, response_list
@@ -109,53 +135,55 @@ class Inferrer:
     def _check_done(self, response):
         return "information_is_sufficient" in response
     
-    def _call_llm(self, prompt, tools = None, max_new_tokens=128, skip_special_tokens=False, enable_thinking=False, use_cache = True):
+    def _call_llm(self, generation_config, prompt, tools = None, skip_special_tokens=False, enable_thinking=False):
         text = self.tokenizer.apply_chat_template(
             prompt,
             tools = tools,
             tokenize=False,
             add_generation_prompt=True,
             enable_thinking = enable_thinking)
-
-        inputs = self.tokenizer(text, return_tensors="pt").to("cuda")
-
+        
+        prompt_mask = None
+        
+        if self.input_preparation_func is None:
+            inputs = self.tokenizer(
+                text=text,
+                return_tensors="pt",
+            ).to("cuda")
+            
+        else:
+            inputs = self.tokenizer(
+                text=text,
+                return_tensors="pt",
+                padding=True,
+                padding_side="left",
+                # add_special_tokens=False,
+            ).to("cuda")  
+            inputs = self.input_preparation_func(inputs)
+            prompt_ids, prompt_mask = inputs["input_ids"], inputs["attention_mask"]
+            inputs = {}
+            inputs["input_ids"], inputs["attention_mask"] = prompt_ids, prompt_mask
+        
         outputs = self.model.generate(
             **inputs,
-            max_new_tokens=max_new_tokens,
-            # do_sample=True,
-            # top_k=50,
-            # top_p=0.95,
-            # temperature=0.6,
-            do_sample=False,
-            top_k=None,
-            top_p=None,
-            temperature=None,
-            pad_token_id=self.tokenizer.eos_token_id,
-            use_cache = use_cache
+            generation_config = generation_config
         )
+        
+        modified_config = GenerationConfig.from_dict(generation_config.to_dict())
+        modified_config.max_new_tokens = 25
+        
         # If still thinking
         if enable_thinking and (151668 not in outputs[0]):
             extended_ids = torch.cat([outputs[0], torch.tensor([151668], device="cuda")])
             outputs = self.model.generate(
                 input_ids=extended_ids.unsqueeze(0),
-                max_new_tokens=25,
-                do_sample=False,
-                top_k=None,
-                top_p=None,
-                temperature=None,
-                pad_token_id=self.tokenizer.eos_token_id,
-                use_cache = use_cache
+                generation_config = modified_config
             )
+            
         if self.tokenizer.eos_token_id not in outputs[0]:
             outputs = self.model.generate(
                 input_ids=extended_ids.unsqueeze(0),
-                max_new_tokens=25,
-                do_sample=False,
-                top_k=None,
-                top_p=None,
-                temperature=None,
-                pad_token_id=self.tokenizer.eos_token_id,
-                use_cache = use_cache
+                generation_config = modified_config
             )
 
         output_ids = outputs[0]
@@ -163,6 +191,7 @@ class Inferrer:
 
         input_len = inputs["input_ids"].shape[-1]
         generated_ids = outputs[0][input_len:]
+        prompt_ids = outputs[0][:input_len]
 
         try:
             end_thinking_index = generated_ids.tolist().index(151668)
@@ -173,11 +202,19 @@ class Inferrer:
             thought = None
 
         completion = self.tokenizer.decode(generated_ids, skip_special_tokens=skip_special_tokens)
-        return completion, thought
+        
+        return {
+            "prompt": prompt,
+            "prompt_mask": prompt_mask,
+            "prompt_ids": prompt_ids,
+            "thought_and_completion_ids": generated_ids,
+            "thought_decoded": thought,
+            "completion_decoded": completion,
+        }
     
     #################################### subquery ####################################
     
-    def infer_subquery_iter(self, data, iteration, max_new_tokens=128, use_tqdm=True):
+    def infer_subquery_iter(self, data, iteration, generation_config, ignore_ids=False, use_tqdm=True):
         prompt_list = []
         response_list = []
         for i in utils.cond_tqdm(range(0, len(data), 1), use_tqdm=use_tqdm, desc=f"iter_{iteration}_1_2q"):
@@ -194,11 +231,34 @@ class Inferrer:
             tools = self._get_tools(Task.SUBQUERY_CONSTRUCT)
             prompt = self._get_prompts(Task.SUBQUERY_CONSTRUCT, query, context)
             prompt_list.append(prompt)
-            subquery = self._call_llm(prompt, tools=tools, max_new_tokens=max_new_tokens)[0]
+            llm_res = self._call_llm(generation_config, prompt, tools=tools)
+            subquery = llm_res["completion_decoded"]
             response_list.append(subquery)
-
+            
             try:
                 data[i][f"nothink_query_iteration_{iteration}"] = subquery
+                if not ignore_ids:
+                    if "prompts" not in data[i].keys():
+                        data[i]["prompts"] = dict()
+                    if "prompt_ids" not in data[i].keys():
+                        data[i]["prompt_ids"] = dict()
+                    if "prompt_mask" not in data[i].keys():
+                        data[i]["prompt_mask"] = dict()
+                    if "thought_and_completion_ids" not in data[i].keys():
+                        data[i]["thought_and_completion_ids"] = dict()
+                        
+                    data[i]["prompt_ids"].update({
+                        f"{iteration}_subq": llm_res["prompt_ids"],
+                    })
+                    data[i]["thought_and_completion_ids"].update({
+                        f"{iteration}_subq": llm_res["thought_and_completion_ids"],
+                    })                    
+                    data[i]["prompts"].update({
+                        f"{iteration}_subq": llm_res["prompt"],
+                    })
+                    data[i]["prompt_mask"].update({
+                        f"{iteration}_subq": llm_res["prompt_mask"],
+                    })
             except Exception as e:
                 print(f"exception at {i}")
         return data, prompt_list, response_list
@@ -249,17 +309,17 @@ class Inferrer:
                     break  # stop after first valid key
         return data
     
-    def infer(self, data, iterations=3, start_iter=0, use_tqdm=False, logs=False, add_onehop=False, calculate_time=True):
-        
+    def infer(self, data, generation_config, iterations=3, start_iter=0, use_tqdm=False, logs=False, add_onehop=False, calculate_time=False, ignore_ids=False, input_preparation_func=None):
+        self.input_preparation_func = input_preparation_func
         timer_start = time.time()
         if start_iter == 0:
             data = self.retrieve_init(data, use_tqdm=use_tqdm, logs=logs)
         for i in range(start_iter, iterations):
-            data, _, __ = self.info_check_iter(data, i, add_onehop=(add_onehop and i == 0), use_tqdm=use_tqdm)
-            data, _, __ = self.infer_subquery_iter(data, i, use_tqdm=use_tqdm)
+            data, _, __ = self.info_check_iter(data, i, generation_config, add_onehop=(add_onehop and i == 0), ignore_ids=ignore_ids, use_tqdm=use_tqdm)
+            data, _, __ = self.infer_subquery_iter(data, i, generation_config, ignore_ids=ignore_ids, use_tqdm=use_tqdm)
             data = self.retrieve_info_iter(data, i, use_tqdm=use_tqdm, logs=logs)
 
-        data, _, __ = self.info_check_iter(data, iterations, use_tqdm=use_tqdm)
+        data, _, __ = self.info_check_iter(data, iterations, generation_config, use_tqdm=use_tqdm)
         data = self.finalize_data(data, iterations)
         timer_end = time.time()
         
