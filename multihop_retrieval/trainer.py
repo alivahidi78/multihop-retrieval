@@ -1,27 +1,16 @@
 from multihop_retrieval.utils.inference import Inferrer
-from transformers.generation.configuration_utils import GenerationConfig
 
 from trl import GRPOTrainer
-from trl.models import prepare_deepspeed, prepare_fsdp, unwrap_model_for_generation
-from trl.trainer.grpo_trainer import truncate_with_protected_tokens, nanstd
-from trl.data_utils import apply_chat_template, is_conversational, maybe_apply_chat_template
-from trl.extras.profiling import profiling_context, profiling_decorator
-from transformers.utils import is_datasets_available, is_flash_attn_2_available, is_peft_available, is_rich_available
-from accelerate.utils import broadcast_object_list, gather, gather_object, is_peft_model, set_seed
-from trl.trainer.utils import (
-    disable_dropout_in_model,
-    entropy_from_logits,
-    generate_model_card,
-    get_comet_experiment_url,
-    pad,
-    print_prompt_completions_sample,
-    selective_log_softmax,
-)
-import copy, re
+from trl.models import unwrap_model_for_generation
+from trl.trainer.grpo_trainer import nanstd
+from trl.data_utils import is_conversational
+from trl.extras.profiling import profiling_context
+from accelerate.utils import gather_object
+import copy
 import torch
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from contextlib import nullcontext
-
+from contextlib import nullcontext        
+          
 class MultihopGRPOTrainer(GRPOTrainer):
     
     def __init__(self, model, reward_funcs, retriever, prompts_path, tools_path, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None):
@@ -56,12 +45,13 @@ class MultihopGRPOTrainer(GRPOTrainer):
         prompt_mask = [lst for d in data for lst in d["prompt_mask"].values()]
         completion_ids = [lst for d in data for lst in d["thought_and_completion_ids"].values()]
         original_prompts = [lst for d in data for lst in d["prompts"].values()]
-        
+        prompt_ids = torch.stack(prompt_ids)
+        prompt_mask = torch.stack(prompt_mask)
+        completion_ids = torch.stack(completion_ids)
         
         prompts = copy.deepcopy(original_prompts)
 
         # Mask everything after the first EOS token
-        print(completion_ids)
         is_eos = completion_ids == self.eos_token_id
         eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
         eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
