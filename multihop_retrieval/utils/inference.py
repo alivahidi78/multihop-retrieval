@@ -1,4 +1,4 @@
-import torch, re, json, time, copy
+import torch, re, json, time
 from transformers.generation.configuration_utils import GenerationConfig
 from multihop_retrieval.utils import utils
 from .utils import Task
@@ -203,6 +203,9 @@ class Inferrer:
 
         completion = self.tokenizer.decode(generated_ids, skip_special_tokens=skip_special_tokens)
         
+        if prompt_mask.dim() == 2: #FIXME
+            prompt_mask = prompt_mask.squeeze(0)
+            
         return {
             "prompt": prompt,
             "prompt_mask": prompt_mask,
