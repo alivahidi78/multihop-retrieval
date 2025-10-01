@@ -1,5 +1,4 @@
 from multihop_retrieval.utils.inference import Inferrer
-
 from trl import GRPOTrainer
 from trl.models import unwrap_model_for_generation
 from trl.trainer.grpo_trainer import nanstd
@@ -11,6 +10,8 @@ import torch
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from contextlib import nullcontext        
           
+from torch.nn.utils.rnn import pad_sequence
+
 class MultihopGRPOTrainer(GRPOTrainer):
     
     def __init__(self, model, reward_funcs, retriever, prompts_path, tools_path, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None):
@@ -22,6 +23,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
     
     #Overridden
     def _generate_and_score_completions(self, inputs):
+        print("_generate_and_score_completions")
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
         
@@ -47,7 +49,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
         original_prompts = [lst for d in data for lst in d["prompts"].values()]
         prompt_ids = torch.stack(prompt_ids)
         prompt_mask = torch.stack(prompt_mask)
-        completion_ids = torch.stack(completion_ids)
+        
+        # TODO check if this is correct
+        completion_ids = pad_sequence(completion_ids, batch_first=True, padding_value=self.pad_token_id)
         
         prompts = copy.deepcopy(original_prompts)
 
@@ -149,8 +153,12 @@ class MultihopGRPOTrainer(GRPOTrainer):
         # rewards_per_func to extract each process's subset.
         rewards_per_func = self._calculate_rewards(inputs, original_prompts, completions, completion_ids_list)
 
+        # TODO how does it apply weights to rewards
         # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        
+        print(f"rewards_per_func: {rewards_per_func}")
+        print(f"rewards: {rewards}")
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
@@ -227,12 +235,16 @@ class MultihopGRPOTrainer(GRPOTrainer):
     
     #Overridden
     def _compute_loss(self, model, inputs):
+        print("_compute_loss")
+        print(inputs.keys())
         return super()._compute_loss(model, inputs)
     
     #Overridden
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None):
-        return super()._get_per_token_logps(model, input_ids, attention_mask, logits_to_keep, batch_size)
-    
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False, pixel_values=None, image_grid_thw=None, pixel_attention_mask=None, image_sizes=None):
+        print("_get_per_token_logps_and_entropies")
+        return super()._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, pixel_values, image_grid_thw, pixel_attention_mask, image_sizes)
+
     #Overridden
     def _prepare_inputs(self, generation_batch):
+        print("_prepare_inputs")
         return super()._prepare_inputs(generation_batch)
