@@ -23,6 +23,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
     
     #Overridden
     def _generate_and_score_completions(self, inputs):
+        # TODO IMPORTANT in case inferrer returns multi-round outputs this breaks down
         print("_generate_and_score_completions")
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
@@ -47,10 +48,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
         prompt_mask = [lst for d in data for lst in d["prompt_mask"].values()]
         completion_ids = [lst for d in data for lst in d["thought_and_completion_ids"].values()]
         original_prompts = [lst for d in data for lst in d["prompts"].values()]
-        prompt_ids = torch.stack(prompt_ids)
-        prompt_mask = torch.stack(prompt_mask)
-        
-        # TODO check if this is correct
+        # TODO check if these are correct
+        prompt_ids = pad_sequence(prompt_ids, batch_first=True, padding_value=self.pad_token_id)
+        prompt_mask = pad_sequence(prompt_mask, batch_first=True, padding_value=self.pad_token_id)
         completion_ids = pad_sequence(completion_ids, batch_first=True, padding_value=self.pad_token_id)
         
         prompts = copy.deepcopy(original_prompts)
@@ -70,6 +70,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
 
         # Sum along sequence dimension (dim=1) to get completion length per sequence, used for logging
         completion_lengths = completion_mask.sum(1)
+        agg_completion_lengths = self.accelerator.gather(completion_lengths)
+        num_items_in_batch = agg_completion_lengths.sum()  # this is required for the DAPO loss
 
         # If mask_truncated_completions is enabled, zero out truncated completions in completion_mask
         if self.mask_truncated_completions:
@@ -226,6 +228,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
             "advantages": advantages,
+            "num_items_in_batch": num_items_in_batch,
         }
         if old_per_token_logps is not None:
             output["old_per_token_logps"] = old_per_token_logps
