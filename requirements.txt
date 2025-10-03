@@ -1,0 +1,13 @@
+# python=3.12.11
+# CUDA==12.6
+# jupyter
+# ipywidgets
+torch --index-url https://download.pytorch.org/whl/cu126
+trl==0.23.1
+transformers==4.56.1
+numpy==2.0.2
+faiss-cpu==1.12.0
+sentence_transformers==5.1.0
+peft==0.17.1
+accelerate==1.10.1
+

@@ -96,35 +96,36 @@ class Inferrer:
             if add_onehop:
                 # TODO deal with onehop training
                 predicted_o = self.one_hop(query, context, generation_config)
-
             try:
                 data[i][col_name] = predicted_m
                 if not ignore_ids:
-                    if "prompts" not in data[i].keys():
-                        data[i]["prompts"] = dict()
-                    if "prompt_ids" not in data[i].keys():
-                        data[i]["prompt_ids"] = dict()
-                    if "prompt_mask" not in data[i].keys():
-                        data[i]["prompt_mask"] = dict()
-                    if "thought_and_completion_ids" not in data[i].keys():
-                        data[i]["thought_and_completion_ids"] = dict()
-                    data[i]["prompt_ids"].update({
-                        f"{iteration}_info": llm_res["prompt_ids"],
-                    })                    
-                    data[i]["prompts"].update({
-                        f"{iteration}_info": llm_res["prompt"],
-                    })
-                    data[i]["prompt_mask"].update({
-                        f"{iteration}_info": llm_res["prompt_mask"],
-                    })
-                    data[i]["thought_and_completion_ids"].update({
-                        f"{iteration}_info": llm_res["thought_and_completion_ids"],
-                    })
+                    data = self._append_llm_res(data, llm_res, i, iteration, "info")
                 if add_onehop:
                     data[i]["onehop"] = predicted_o
             except Exception as e:
                 print(f"exception at {i}")
         return data, prompt_list, response_list
+    
+    def _append_llm_res(self, data, llm_res, data_num, iteration, step_name):
+        i = data_num
+        labels = ["prompt", "prompt_ids", "prompt_mask", "thought_and_completion_ids",
+                  "completion_decoded",
+                  ]
+        for label in labels:
+            if label not in data[i].keys():
+                data[i][label] = dict()
+            data[i][label].update({
+                f"{iteration}_{step_name}": llm_res[label],
+            })   
+            # if iteration not in data[i][label].keys():
+            #     data[i][label][iteration] = dict()
+            # data[i][label][iteration].update({
+            #     step_name: llm_res[label]
+            # })
+            # data[i][label][iteration].update({
+            #     step_name: llm_res[label]
+            # })            
+        return data    
     
     def _get_tools(self, task):
         return utils.get_tools(self.base_path, self.tools_path, task)
@@ -241,27 +242,7 @@ class Inferrer:
             try:
                 data[i][f"nothink_query_iteration_{iteration}"] = subquery
                 if not ignore_ids:
-                    if "prompts" not in data[i].keys():
-                        data[i]["prompts"] = dict()
-                    if "prompt_ids" not in data[i].keys():
-                        data[i]["prompt_ids"] = dict()
-                    if "prompt_mask" not in data[i].keys():
-                        data[i]["prompt_mask"] = dict()
-                    if "thought_and_completion_ids" not in data[i].keys():
-                        data[i]["thought_and_completion_ids"] = dict()
-                        
-                    data[i]["prompt_ids"].update({
-                        f"{iteration}_subq": llm_res["prompt_ids"],
-                    })
-                    data[i]["thought_and_completion_ids"].update({
-                        f"{iteration}_subq": llm_res["thought_and_completion_ids"],
-                    })                    
-                    data[i]["prompts"].update({
-                        f"{iteration}_subq": llm_res["prompt"],
-                    })
-                    data[i]["prompt_mask"].update({
-                        f"{iteration}_subq": llm_res["prompt_mask"],
-                    })
+                    data = self._append_llm_res(data, llm_res, i, iteration, "subq")
             except Exception as e:
                 print(f"exception at {i}")
         return data, prompt_list, response_list
@@ -317,12 +298,14 @@ class Inferrer:
         timer_start = time.time()
         if start_iter == 0:
             data = self.retrieve_init(data, use_tqdm=use_tqdm, logs=logs)
+        iterations_processed = 0
         for i in range(start_iter, iterations):
             data, _, __ = self.info_check_iter(data, i, generation_config, add_onehop=(add_onehop and i == 0), ignore_ids=ignore_ids, use_tqdm=use_tqdm)
             data, _, __ = self.infer_subquery_iter(data, i, generation_config, ignore_ids=ignore_ids, use_tqdm=use_tqdm)
             data = self.retrieve_info_iter(data, i, use_tqdm=use_tqdm, logs=logs)
-
-        data, _, __ = self.info_check_iter(data, iterations, generation_config, use_tqdm=use_tqdm)
+            iterations_processed += 1
+        if iterations_processed == iterations - start_iter:
+            data, _, __ = self.info_check_iter(data, iterations, generation_config, use_tqdm=use_tqdm)
         data = self.finalize_data(data, iterations)
         timer_end = time.time()
         

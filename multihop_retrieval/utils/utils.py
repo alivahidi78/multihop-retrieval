@@ -65,7 +65,17 @@ def get_prompts(base_path, prompts_path, task, query, context=None):
             return Template(obj).safe_substitute(values)
         else:
             return obj
+        
     # context = list(set(context))
+    context_modified = []
+    for i, (title, contents) in enumerate(context, start=1):
+        # join all content parts into one string
+        content_str = "".join(contents)
+        # format as required
+        context_modified.append(f"{i}. {title}:\n{content_str}")
+
+    context_str = "\n".join(context_modified)
+    
     with open(os.path.join(base_path, prompts_path), 'r') as f:
         template = json.load(f)
     if(task == Task.INFO_CHECK):
@@ -76,6 +86,19 @@ def get_prompts(base_path, prompts_path, task, query, context=None):
         task_title = "SHORT_ANSWER"
     values = {
         "query": query,
-        "context":  context,
+        "context":  context_str,
     }
     return substitute(template[task_title], values)
+
+def flatten_and_count(data):
+    flat = [item for sublist in data for item in sublist]
+    counts = [len(sublist) for sublist in data]
+    return flat, counts
+
+def reconstruct_2d_list(flat, counts):
+    reconstructed = []
+    idx = 0
+    for count in counts:
+        reconstructed.append(flat[idx: idx + count])
+        idx += count
+    return reconstructed

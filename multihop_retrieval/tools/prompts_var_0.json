@@ -2,7 +2,7 @@
     "INFO_CHECK": [
         {
             "role": "system",
-            "content": "You are a helpful assistant.\nConsider if the provided context is enough to respond to the query:\nContext: $context\nUse the correct tool to react to the situation.\nALWAYS USE ONE TOOL.\nOne and only one tool is applicable for each user query.\nMake sure to include a tool call in your response.\n"
+            "content": "You are a helpful assistant.\nConsider if the provided context is enough to respond to the query:\nContext:\n$context\n\nUse the correct tool to react to the situation.\nALWAYS USE ONE TOOL.\nOne and only one tool is applicable for each user query.\nMake sure to include a tool call in your response.\n"
         },
         {
             "role": "user",
@@ -12,7 +12,7 @@
     "SUBQUERY_CONSTRUCT": [
         {
             "role": "system",
-            "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink step by step about what pieces of information are missing.\nCome up with multiple SIMPLE questions and use retrieve_info with the new query(s).\nBE SURE TO INCLUDE at least one retrieve_info request in your response.\nDO NOT JUST REPEAT THE USER QUERY.\nAsk simpler questions instead.\nContext: $context\n"
+            "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink step by step about what pieces of information are missing.\nCome up with multiple SIMPLE questions and use retrieve_info with the new query(s).\nBE SURE TO INCLUDE at least one retrieve_info request in your response.\nDO NOT JUST REPEAT THE USER QUERY.\nAsk simpler questions instead.\nContext:\n$context\n"
         },
         {
             "role": "user",
@@ -22,7 +22,7 @@
     "SHORT_ANSWER": [
         {
             "role": "system",
-            "content": "You are a helpful assistant.\nRespond to the user's query based on the provided context.\nContext: $context\nKeep your responses short. If possible to one expression or one word.\n\nExamples:\nUser: Is Antarctica in the North or South of the Planet?\nAssistant: South\n\nUser: Has there ever been a human on Mars before 2022?\nAssistant: No\n\n"
+            "content": "You are a helpful assistant.\nRespond to the user's query based on the provided context.\nContext:\n$context\n\nKeep your responses short. If possible to one expression or one word.\n\nExamples:\nUser: Is Antarctica in the North or South of the Planet?\nAssistant: South\n\nUser: Has there ever been a human on Mars before 2022?\nAssistant: No\n\n"
         },
         {
             "role": "user",

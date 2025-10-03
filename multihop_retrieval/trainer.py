@@ -1,4 +1,5 @@
 from multihop_retrieval.utils.inference import Inferrer
+from multihop_retrieval.utils import utils
 from trl import GRPOTrainer
 from trl.models import unwrap_model_for_generation
 from trl.trainer.grpo_trainer import nanstd
@@ -8,8 +9,7 @@ from accelerate.utils import gather_object
 import copy
 import torch
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from contextlib import nullcontext        
-          
+from contextlib import nullcontext           
 from torch.nn.utils.rnn import pad_sequence
 
 class MultihopGRPOTrainer(GRPOTrainer):
@@ -25,11 +25,12 @@ class MultihopGRPOTrainer(GRPOTrainer):
     def _generate_and_score_completions(self, inputs):
         # TODO IMPORTANT in case inferrer returns multi-round outputs this breaks down
         print("_generate_and_score_completions")
+        
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
-        
         data = copy.deepcopy(inputs)
         
+        # Context transplated from GRPOTrainer
         with (
             profiling_context(self, "transformers.generate"),
             unwrap_model_for_generation(
@@ -38,23 +39,33 @@ class MultihopGRPOTrainer(GRPOTrainer):
             torch.no_grad(),
             FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
         ):  
+            # A bit of a hackjob to insert _prepare_inputs from transformers trainer into inferrer
             input_preparation_func = super(GRPOTrainer, self)._prepare_inputs
-            
             inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_path, self.tools_path)
-            
             data = inferrer.infer(data, self.generation_config, self.iterations, input_preparation_func=input_preparation_func)
         
-        prompt_ids = [lst for d in data for lst in d["prompt_ids"].values()]
-        prompt_mask = [lst for d in data for lst in d["prompt_mask"].values()]
-        completion_ids = [lst for d in data for lst in d["thought_and_completion_ids"].values()]
-        original_prompts = [lst for d in data for lst in d["prompts"].values()]
+        final_answers = [d[f"multihop{self.iterations}"] for d in data]
+        
+        # TODO clean up    
+        prompt_ids, prompt_ids_counts = utils.flatten_and_count([list(d["prompt_ids"].values()) for d in data])
+        prompt_mask, prompt_mask_counts = utils.flatten_and_count([list(d["prompt_mask"].values()) for d in data])
+        completion_ids, completion_ids_counts = utils.flatten_and_count([list(d["thought_and_completion_ids"].values()) for d in data])
+        original_prompts, original_prompts_counts = utils.flatten_and_count([list(d["prompt"].values()) for d in data])
+        
+        assert prompt_ids_counts == prompt_mask_counts == completion_ids_counts == original_prompts_counts
+        grouping_sizes = prompt_ids_counts
+        
+        # Now we have all the prompts and completions and the way they should be grouped together
+        # for the purpose of them being part of the same multi-step trajectory
+        
+        prompts = copy.deepcopy(original_prompts)
+        
         # TODO check if these are correct
         prompt_ids = pad_sequence(prompt_ids, batch_first=True, padding_value=self.pad_token_id)
         prompt_mask = pad_sequence(prompt_mask, batch_first=True, padding_value=self.pad_token_id)
         completion_ids = pad_sequence(completion_ids, batch_first=True, padding_value=self.pad_token_id)
-        
-        prompts = copy.deepcopy(original_prompts)
 
+        # Transplanted from parent class until the reward calculation
         # Mask everything after the first EOS token
         is_eos = completion_ids == self.eos_token_id
         eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
@@ -62,83 +73,28 @@ class MultihopGRPOTrainer(GRPOTrainer):
         sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
 
-        # Convert tensor to a list of lists of token IDs. This will be passed to the reward function, avoiding the need
-        # to re-tokenize completions if the reward is computed from tokens.
+        # Convert tensor to a list of lists of token IDs. This will be passed to the reward
+        # function, avoiding the need to re-tokenize completions if the reward is computed 
+        # from tokens.
         completion_ids_list = [
             [id.item() for id, m in zip(row, mask_row) if m] for row, mask_row in zip(completion_ids, completion_mask)
         ]
 
-        # Sum along sequence dimension (dim=1) to get completion length per sequence, used for logging
         completion_lengths = completion_mask.sum(1)
         agg_completion_lengths = self.accelerator.gather(completion_lengths)
         num_items_in_batch = agg_completion_lengths.sum()  # this is required for the DAPO loss
 
         # If mask_truncated_completions is enabled, zero out truncated completions in completion_mask
-        if self.mask_truncated_completions:
-            truncated_completions = ~is_eos.any(dim=1)
-            completion_mask = completion_mask * (~truncated_completions).unsqueeze(1).int()
+        # if self.mask_truncated_completions:
+        #     truncated_completions = ~is_eos.any(dim=1)
+        #     completion_mask = completion_mask * (~truncated_completions).unsqueeze(1).int()
 
         # Concatenate prompt_mask with completion_mask for logit computation
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
 
-        logits_to_keep = completion_ids.size(1)  # we only need to compute the logits for the completion tokens
-        batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
-
-        #TODO ??
+        #TODO ?? I don't know what these do
         old_per_token_logps = None
         ref_per_token_logps = None
-        
-        # with torch.no_grad():
-        #     # If the generation and optimization steps are misaligned—i.e., if generation does not occur at the end of
-        #     # a full optimizer step (when gradient_accumulation_steps is not a multiple of generate_every)—then the
-        #     # samples may come from an earlier version of the model. In that case, we need to track old_per_token_logps
-        #     # for importance sampling. If the steps are aligned, importance sampling isn't necessary and we set
-        #     # old_per_token_logps to None.
-        #     generate_every = self.args.steps_per_generation * self.num_iterations  # generation frequency
-        #     if self.args.gradient_accumulation_steps % generate_every != 0:
-        #         old_per_token_logps, _ = self._get_per_token_logps_and_entropies(
-        #             self.model,
-        #             prompt_completion_ids,
-        #             attention_mask,
-        #             logits_to_keep,
-        #             batch_size,
-        #             pixel_values=prompt_inputs.get("pixel_values"),
-        #             image_grid_thw=prompt_inputs.get("image_grid_thw"),
-        #             pixel_attention_mask=prompt_inputs.get("pixel_attention_mask"),
-        #             image_sizes=prompt_inputs.get("image_sizes"),
-        #         )
-        #     else:
-        #         old_per_token_logps = None
-
-        #     # Compute the per-token log probabilities for the reference model
-        #     if self.beta != 0.0:
-        #         if self.ref_model is not None:
-        #             ref_per_token_logps, _ = self._get_per_token_logps_and_entropies(
-        #                 self.ref_model,
-        #                 prompt_completion_ids,
-        #                 attention_mask,
-        #                 logits_to_keep,
-        #                 batch_size=batch_size,
-        #                 pixel_values=prompt_inputs.get("pixel_values"),
-        #                 image_grid_thw=prompt_inputs.get("image_grid_thw"),
-        #                 pixel_attention_mask=prompt_inputs.get("pixel_attention_mask"),
-        #                 image_sizes=prompt_inputs.get("image_sizes"),
-        #             )
-        #         else:
-        #             with self.accelerator.unwrap_model(self.model).disable_adapter():
-        #                 ref_per_token_logps, _ = self._get_per_token_logps_and_entropies(
-        #                     self.model,
-        #                     prompt_completion_ids,
-        #                     attention_mask,
-        #                     logits_to_keep,
-        #                     batch_size=batch_size,
-        #                     pixel_values=prompt_inputs.get("pixel_values"),
-        #                     image_grid_thw=prompt_inputs.get("image_grid_thw"),
-        #                     pixel_attention_mask=prompt_inputs.get("pixel_attention_mask"),
-        #                     image_sizes=prompt_inputs.get("image_sizes"),
-        #                 )
-        #     else:
-        #         ref_per_token_logps = None
 
         # Decode the generated completions
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
@@ -150,12 +106,15 @@ class MultihopGRPOTrainer(GRPOTrainer):
         else:
             completions = completions_text
 
-        # Calculate rewards for each reward function. rewards_per_func aggregates rewards across all processes. This is
-        # important because rewards will be normalized per group, and completions are distributed. We will later slice
-        # rewards_per_func to extract each process's subset.
-        rewards_per_func = self._calculate_rewards(inputs, original_prompts, completions, completion_ids_list)
+        # Calculate rewards for each reward function. rewards_per_func aggregates rewards across 
+        # all processes. This is important because rewards will be normalized per group, and
+        # completions are distributed. We will later slice rewards_per_func to extract each
+        # process's subset.
+        
+        # TODO do two sets of rewards for groups and for each prompt-completion set
+        rewards_per_func = self._calculate_rewards(inputs, original_prompts, completions, completion_ids_list, final_answers, grouping_sizes)
 
-        # TODO how does it apply weights to rewards
+        # TODO how does it apply weights to rewards?
         # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
         
@@ -163,11 +122,13 @@ class MultihopGRPOTrainer(GRPOTrainer):
         print(f"rewards: {rewards}")
 
         # Compute grouped-wise rewards
+        # These should be grouped by initial user query
         mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
         std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
         is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
 
         # Normalize the rewards to compute the advantages
+        # Again, these should be grouped by initial user query
         mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
         std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
         advantages = rewards - mean_grouped_rewards
@@ -175,6 +136,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
             advantages = advantages / (std_grouped_rewards + 1e-4)
 
         # Slice to keep only the local part of the data
+        # TODO ?? probably multiple process situation
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
             (self.accelerator.process_index + 1) * len(prompts),
@@ -187,24 +149,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
             self.state.num_input_tokens_seen += self.accelerator.gather(attention_mask.sum()).sum().item()
         self._metrics[mode]["num_tokens"] = [self.state.num_input_tokens_seen]
 
-        # Log completion lengths, mean, min, max
-        agg_completion_lengths = self.accelerator.gather(completion_lengths)
-        self._metrics[mode]["completions/mean_length"].append(agg_completion_lengths.float().mean().item())
-        self._metrics[mode]["completions/min_length"].append(agg_completion_lengths.float().min().item())
-        self._metrics[mode]["completions/max_length"].append(agg_completion_lengths.float().max().item())
-
-        # Identify sequences that terminated with EOS and log their lengths
-        agg_terminated_with_eos = self.accelerator.gather(is_eos.any(dim=1))
-        term_completion_lengths = agg_completion_lengths[agg_terminated_with_eos]
-        clipped_completions_ratio = 1 - len(term_completion_lengths) / len(agg_completion_lengths)
-        self._metrics[mode]["completions/clipped_ratio"].append(clipped_completions_ratio)
-        if len(term_completion_lengths) == 0:  # edge case where no terminated sequences are found
-            term_completion_lengths = torch.zeros(1, device=device)
-        self._metrics[mode]["completions/mean_terminated_length"].append(term_completion_lengths.float().mean().item())
-        self._metrics[mode]["completions/min_terminated_length"].append(term_completion_lengths.float().min().item())
-        self._metrics[mode]["completions/max_terminated_length"].append(term_completion_lengths.float().max().item())
-
-        # Calculate mean reward per function, but only for samples where the function was applied (non-NaN values)
+        # Calculate mean reward per function, but only for samples where the function 
+        # was applied (non-NaN values)
+        # These should also be grouped by initial user query
         for i, reward_func_name in enumerate(self.reward_func_names):
             mean_rewards = torch.nanmean(rewards_per_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}/mean"].append(mean_rewards)
@@ -215,6 +162,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())
 
         # Log prompt and completion texts
+        # TODO replace this with user query instead? 
+        # How relevant are these logs for training?
         prompts_text = prompts
         self._logs["prompt"].extend(gather_object(prompts_text))
         self._logs["completion"].extend(gather_object(completions_text))
@@ -239,7 +188,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
     #Overridden
     def _compute_loss(self, model, inputs):
         print("_compute_loss")
-        print(inputs.keys())
         return super()._compute_loss(model, inputs)
     
     #Overridden
@@ -251,3 +199,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
     def _prepare_inputs(self, generation_batch):
         print("_prepare_inputs")
         return super()._prepare_inputs(generation_batch)
+    
+    #Overridden
+    def _calculate_rewards(self, inputs, prompts, completions, completion_ids_list, final_answers, grouping_sizes):
+        print("_calculate_rewards")
+        return super()._calculate_rewards(inputs, prompts, completions, completion_ids_list)
