@@ -46,21 +46,21 @@ class MultihopGRPOTrainer(GRPOTrainer):
         errors = [d[f"error"] for d in data]
         
         # TODO clean up
-        prompts_grouped = [list(d["prompt"].values()) for d in data]
-        prompt_ids_grouped = [list(d["prompt_ids"].values()) for d in data]  
-        prompt_mask_grouped = [list(d["prompt_mask"].values()) for d in data]
-        completion_ids_grouped = [list(d["thought_and_completion_ids"].values()) for d in data]
-        completion_grouped = [list(d["completion_decoded"].values()) for d in data]
+        prompts_bundled = [list(d["prompt"].values()) for d in data]
+        prompt_ids_bundled = [list(d["prompt_ids"].values()) for d in data]  
+        prompt_masks_bundled = [list(d["prompt_mask"].values()) for d in data]
+        completion_ids_bundled = [list(d["thought_and_completion_ids"].values()) for d in data]
+        completions_bundled = [list(d["completion_decoded"].values()) for d in data]
         
-        prompt_ids, prompt_ids_counts = utils.flatten_and_count(prompt_ids_grouped)
-        prompt_mask, prompt_mask_counts = utils.flatten_and_count(prompt_mask_grouped)
-        completion_ids, completion_ids_counts = utils.flatten_and_count(completion_ids_grouped)
-        original_prompts, original_prompts_counts = utils.flatten_and_count(prompts_grouped)
-        completions_text, completions_counts = utils.flatten_and_count(completion_grouped)
+        prompt_ids, prompt_ids_counts = utils.unbundle(prompt_ids_bundled)
+        prompt_mask, prompt_mask_counts = utils.unbundle(prompt_masks_bundled)
+        completion_ids, completion_ids_counts = utils.unbundle(completion_ids_bundled)
+        original_prompts, original_prompts_counts = utils.unbundle(prompts_bundled)
+        completions, completions_counts = utils.unbundle(completions_bundled)
         
         assert prompt_ids_counts == prompt_mask_counts == completion_ids_counts == original_prompts_counts == completions_counts
         
-        grouping_sizes = prompt_ids_counts
+        bundle_lengths = prompt_ids_counts
         
         # Now we have all the prompts and completions and the way they should be grouped together
         # for the purpose of them being part of the same multi-step trajectory
@@ -103,50 +103,49 @@ class MultihopGRPOTrainer(GRPOTrainer):
         old_per_token_logps = None
         ref_per_token_logps = None
 
-        # Decode the generated completions
-        # completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+        # Process the generated completions
         if is_conversational(inputs[0]):
-            completions = []
-            for prompt, completion in zip(prompts, completions_text):
+            processed_completions = []
+            for prompt, completion in zip(prompts, completions):
                 bootstrap = prompt.pop()["content"] if prompt[-1]["role"] == "assistant" else ""
-                completions.append([{"role": "assistant", "content": bootstrap + completion}])
+                processed_completions.append([{"role": "assistant", "content": bootstrap + completion}])
         else:
-            completions = completions_text
+            processed_completions = completions
 
         # Calculate rewards for each reward function. rewards_per_func aggregates rewards across 
         # all processes. This is important because rewards will be normalized per group, and
         # completions are distributed. We will later slice rewards_per_func to extract each
         # process's subset.
         
-        # TODO do two sets of rewards for groups and for each prompt-completion set
-        completions_2d = utils.reconstruct_2d_list(completions, grouping_sizes)
-        completion_ids_list_2d = utils.reconstruct_2d_list(completion_ids_list, grouping_sizes)
-        rewards_every_func, rewards_grouped_func = self._calculate_rewards(inputs, prompts_grouped, completions_2d, completion_ids_list_2d, final_answers, errors, grouping_sizes)
+        completions_rebundled = utils.rebundle(processed_completions, bundle_lengths)
+        completion_ids_list_rebundled = utils.rebundle(completion_ids_list, bundle_lengths)
+        rewards_unbundled_func, rewards_bundled_func = self._calculate_rewards(inputs, prompts_bundled, completions_rebundled, completion_ids_list_rebundled, final_answers, errors, bundle_lengths)
          
         # TODO how does it apply weights to rewards?
         # Apply weights to each reward function's output and sum
-        rewards_every = (rewards_every_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
-        rewards_grouped = (rewards_grouped_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        rewards_unbundled = (rewards_unbundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
         
-        print(f"rewards_every: {rewards_every}")
-        print(f"rewards_grouped: {rewards_grouped}")
+        print(f"rewards_every: {rewards_unbundled}")
+        print(f"rewards_grouped: {rewards_bundled}")
 
         # Compute grouped-wise rewards
-        # These should be grouped by initial user query
-        mean_grouped_rewards = rewards_grouped.view(-1, self.num_generations).mean(dim=1)
-        std_grouped_rewards = rewards_grouped.view(-1, self.num_generations).std(dim=1)
+        mean_grouped_rewards = rewards_bundled.view(-1, self.num_generations).mean(dim=1)
+        std_grouped_rewards = rewards_bundled.view(-1, self.num_generations).std(dim=1)
         is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
 
         # Normalize the rewards to compute the advantages
-        # Again, these should be grouped by initial user query
         mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
         std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        advantages = rewards_grouped - mean_grouped_rewards
+        advantages = rewards_bundled - mean_grouped_rewards
         if self.scale_rewards:
             advantages = advantages / (std_grouped_rewards + 1e-4)
 
+        # Unbundle advantages
+        advantages = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(advantages, bundle_lengths)], dim=0)
+        
         # Slice to keep only the local part of the data
-        # TODO ?? probably multiple process situation
+        # Note: probably multiple process situation
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
             (self.accelerator.process_index + 1) * len(prompts),
@@ -161,11 +160,11 @@ class MultihopGRPOTrainer(GRPOTrainer):
 
         # Calculate mean reward per function, but only for samples where the function 
         # was applied (non-NaN values)
-        # These should also be grouped by initial user query
+        # Note: these should be bundled
         for i, reward_func_name in enumerate(self.reward_func_names):
-            mean_rewards = torch.nanmean(rewards_grouped_func[:, i]).item()
+            mean_rewards = torch.nanmean(rewards_bundled_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}/mean"].append(mean_rewards)
-            std_rewards = nanstd(rewards_grouped_func[:, i]).item()
+            std_rewards = nanstd(rewards_bundled_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}/std"].append(std_rewards)
         self._metrics[mode]["reward"].append(mean_grouped_rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
@@ -173,15 +172,12 @@ class MultihopGRPOTrainer(GRPOTrainer):
 
         # Log prompt and completion texts
         # TODO replace this with user query instead? 
-        # How relevant are these logs for training?
-        prompts_text = prompts
-        self._logs["prompt"].extend(gather_object(prompts_text))
-        self._logs["completion"].extend(gather_object(completions_text))
+        # Note: probably irrelevant for training
+        self._logs["prompt"].extend(gather_object(prompts_bundled))
+        self._logs["completion"].extend(gather_object(completions_bundled))
         for i, name in enumerate(self.reward_func_names):
-            self._logs["rewards"][name].extend(rewards_grouped_func[:, i].tolist())
+            self._logs["rewards"][name].extend(rewards_bundled_func[:, i].tolist())
         self._logs["advantages"].extend(all_process_advantages.tolist())
-
-        advantages = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(advantages, grouping_sizes)], dim=0)
 
         output = {
             "prompt_ids": prompt_ids,
@@ -210,7 +206,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         return super()._prepare_inputs(generation_batch)
     
     #Overridden
-    def _calculate_rewards(self, inputs, prompts, completions, completion_ids_list, final_answers, errors, grouping_sizes):
+    def _calculate_rewards(self, inputs, prompts, completions, completion_ids_list, final_answers, errors, bundle_lengths):
         from torch import nn
         import warnings
         from accelerate.utils import gather
@@ -253,6 +249,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
 
         # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
         # completions may be distributed across processes
-        rewards_grouped = gather(rewards_per_func)
-        rewards_every = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(rewards_grouped, grouping_sizes)], dim=0)
-        return rewards_every, rewards_grouped
+        rewards_bundled = gather(rewards_per_func)
+        rewards_unbundled = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(rewards_bundled, bundle_lengths)], dim=0)
+        return rewards_unbundled, rewards_bundled

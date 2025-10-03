@@ -129,12 +129,12 @@ def compute_f1(a_gold, a_pred):
     f1 = (2 * precision * recall) / (precision + recall)
     return f1
 
-def flatten_and_count(data):
+def unbundle(data):
     flat = [item for sublist in data for item in sublist]
     counts = [len(sublist) for sublist in data]
     return flat, counts
 
-def reconstruct_2d_list(flat, counts):
+def rebundle(flat, counts):
     reconstructed = []
     idx = 0
     for count in counts:
