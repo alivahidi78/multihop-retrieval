@@ -5,6 +5,8 @@ from tqdm import tqdm
 import os
 from enum import Enum
 from string import Template
+import string
+from collections import Counter
 
 class Task(Enum):
     INFO_CHECK = "info_check"
@@ -89,6 +91,43 @@ def get_prompts(base_path, prompts_path, task, query, context=None):
         "context":  context_str,
     }
     return substitute(template[task_title], values)
+
+def normalize_answer(s):
+    """Lower text and remove punctuation, articles, and extra whitespace."""
+    def remove_articles(text):
+        return re.sub(r'\b(a|an|the)\b', ' ', text)
+
+    def white_space_fix(text):
+        return ' '.join(text.split())
+
+    def remove_punc(text):
+        return ''.join(ch for ch in text if ch not in string.punctuation)
+
+    def lower(text):
+        return text.lower()
+
+    return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+def compute_exact(a_gold, a_pred):
+    return int(normalize_answer(a_gold) == normalize_answer(a_pred))
+
+def compute_f1(a_gold, a_pred):
+    gold_tokens = normalize_answer(a_gold).split()
+    pred_tokens = normalize_answer(a_pred).split()
+    common = Counter(gold_tokens) & Counter(pred_tokens)
+    num_same = sum(common.values())
+
+    if len(gold_tokens) == 0 or len(pred_tokens) == 0:
+        # If both are empty
+        return int(gold_tokens == pred_tokens)
+
+    if num_same == 0:
+        return 0
+
+    precision = num_same / len(pred_tokens)
+    recall = num_same / len(gold_tokens)
+    f1 = (2 * precision * recall) / (precision + recall)
+    return f1
 
 def flatten_and_count(data):
     flat = [item for sublist in data for item in sublist]
