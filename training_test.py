@@ -1,9 +1,14 @@
-import json, os
+import json, os, copy
 from dotenv import load_dotenv
 from multihop_retrieval.utils.inference import Inferrer 
+from multihop_retrieval.utils.retrieval import Retriever
+from multihop_retrieval.trainer import MultihopGRPOTrainer
 from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import faiss
+from tqdm import tqdm
+
+USE_SPLIT = False
 
 if __name__ == "__main__":
     
@@ -45,10 +50,20 @@ if __name__ == "__main__":
         metadata = json.load(f)
         
     print("lookup table loaded.")
-        
-    cpu_index = faiss.read_index(f"{chunk_dir}/ivf_index.faiss")
-    cpu_index.nprobe = nprobe
     
+    if not USE_SPLIT:
+        cpu_index = faiss.read_index(f"{chunk_dir}/ivf_index.faiss")
+        cpu_index.nprobe = nprobe
+    else:
+        chunk_dir = "../data/minilm-embedded/split"
+        index_files = sorted(f for f in os.listdir(chunk_dir) if f.startswith("ivf_shard") and f.endswith(".faiss"))
+        print(len(index_files))
+        cpu_index = faiss.IndexShards()
+        for fpath in tqdm(index_files):
+            index = faiss.read_index(os.path.join(chunk_dir, fpath))
+            cpu_index.add_shard(index)
+        cpu_index.nprobe = nprobe
+        
     print("ivf index loaded.")
     
     tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True, cache_dir=cache_dir)
@@ -68,3 +83,47 @@ if __name__ == "__main__":
     data = inferrer.infer(data, iterations=3, use_tqdm=True, logs=True)
     with open(os.path.join(BASE_PATH, OUTPUT_PATH, f"./dev_iter_{iterations}_processed_5.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+        
+    print("inference successful.")
+    
+    from peft import get_peft_model, LoraConfig, TaskType
+    from trl import GRPOConfig
+    lora_config = LoraConfig(
+        r=64,
+        lora_alpha=64,
+        # lora_dropout=0.05,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+        target_modules = ['q_proj', 'v_proj'],
+    )
+
+    training_args = GRPOConfig(
+        output_dir="./results",
+        logging_dir="./logs",
+        num_generations=2, # 8 is too much and fills memory
+        per_device_train_batch_size=2,
+        logging_steps=5,
+        save_steps=50,
+        num_train_epochs=2,
+        label_names=["labels"],
+        # beta = 0.5,
+        # eval_steps=200,
+        # eval_strategy="steps",
+        # report_to="none",
+    )
+    
+    retriever = Retriever(BASE_PATH, WIKI_PATH, embedder, cpu_index, metadata)
+    data = copy.deepcopy(all_data[:limit])
+    trainer = MultihopGRPOTrainer(
+        model=model,
+        args=training_args,
+        # iterations = 3,
+        retriever = retriever,
+        prompts_path = PROMPTS_PATH,
+        tools_path = TOOLS_PATH,
+        # reward_funcs=reward_funcs(model),
+        train_dataset = data,
+        peft_config = lora_config,
+    )
+    
+    trainer.train()

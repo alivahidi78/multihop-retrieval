@@ -16,11 +16,12 @@ from contextlib import nullcontext
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, retriever, prompts_path, tools_path, reward_funcs=None, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None):
+    def __init__(self, model, retriever, prompts_path, tools_path, reward_funcs=None, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None):
         self.iterations = iterations
         self.retriever = retriever
         self.prompts_path = prompts_path
         self.tools_path = tools_path
+        self.unbundled_batching = unbundled_batching
         
         if reward_funcs == None:
             reward_funcs = MultihopGRPOTrainer.get_default_reward_functions()
@@ -93,7 +94,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         # Prompts padded on the left.
         prompt_ids = pad(prompt_ids, padding_value=self.pad_token_id, padding_side="left")
         prompt_mask = pad(prompt_mask, padding_value=0, padding_side="left")
-        # Save original completions lengths for padding later
+        # Save original completions lengths for padding the masks later
         original_completions_lengths = torch.tensor([len(t) for t in completion_ids], device=device)
         # Completions padded on the right
         completion_ids = pad(completion_ids, padding_value=self.pad_token_id, padding_side="right")
@@ -106,7 +107,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
         
-        # New code:
+        # If no eos, still exclude padding
         default_completions_mask = (sequence_indices < original_completions_lengths.unsqueeze(1)).int()
         completion_mask = default_completions_mask * completion_mask
 
@@ -121,10 +122,10 @@ class MultihopGRPOTrainer(GRPOTrainer):
         agg_completion_lengths = self.accelerator.gather(completion_lengths)
         num_items_in_batch = agg_completion_lengths.sum()  # this is required for the DAPO loss
 
-        # If mask_truncated_completions is enabled, zero out truncated completions in completion_mask
-        # if self.mask_truncated_completions:
-        #     truncated_completions = ~is_eos.any(dim=1)
-        #     completion_mask = completion_mask * (~truncated_completions).unsqueeze(1).int()
+        # If mask_truncated_completions is enabled, zero out truncated completions in completion_mask (transplanted from parent class)
+        if self.mask_truncated_completions:
+            truncated_completions = ~is_eos.any(dim=1)
+            completion_mask = completion_mask * (~truncated_completions).unsqueeze(1).int()
 
         # Concatenate prompt_mask with completion_mask for logit computation
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
@@ -151,7 +152,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         completion_ids_list_rebundled = utils.rebundle(completion_ids_list, bundle_lengths)
         rewards_unbundled_func, rewards_bundled_func = self._calculate_rewards(inputs, prompts_bundled, completions_rebundled, completion_ids_list_rebundled, final_answers, errors, bundle_lengths)
          
-        # TODO how does it apply weights to rewards?
         # Apply weights to each reward function's output and sum
         rewards_unbundled = (rewards_unbundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
         rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
@@ -270,12 +270,15 @@ class MultihopGRPOTrainer(GRPOTrainer):
     
     #Overridden
     def _compute_loss(self, model, inputs):
-        mode = "train" if self.model.training else "eval"
-        batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
         return super()._compute_loss(model, inputs)
     
     #Overridden
     def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False, pixel_values=None, image_grid_thw=None, pixel_attention_mask=None, image_sizes=None):
+        # Note: this is meant solely for compute_loss calls within the training step.
+        # A cleaner implementation might be possible
+        mode = "train" if self.model.training else "eval"
+        if self.unbundled_batching:
+            batch_size = self.unbundled_batching if mode == "train" else None
         return super()._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, pixel_values, image_grid_thw, pixel_attention_mask, image_sizes)
 
     #Overridden
