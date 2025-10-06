@@ -16,16 +16,38 @@ from contextlib import nullcontext
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, reward_funcs, retriever, prompts_path, tools_path, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None):
+    def __init__(self, model, retriever, prompts_path, tools_path, reward_funcs=None, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None):
         self.iterations = iterations
         self.retriever = retriever
         self.prompts_path = prompts_path
         self.tools_path = tools_path
+        
+        if reward_funcs == None:
+            reward_funcs = MultihopGRPOTrainer.get_default_reward_functions()
+            
         super().__init__(model, reward_funcs, args, train_dataset, eval_dataset, processing_class, reward_processing_classes, callbacks, optimizers, peft_config)
     
+    @staticmethod
+    def get_default_reward_functions():
+        
+        def compute_exact(completions, final_answers, **kwargs):
+            rewards = [0]* len(final_answers)
+            golden_answers = kwargs["answer"]
+            for i, a in enumerate(final_answers):
+                rewards[i] = utils.compute_exact(golden_answers[i], a)
+            return rewards
+        
+        def compute_f1(completions, final_answers, **kwargs):
+            rewards = [0]* len(final_answers)
+            golden_answers = kwargs["answer"]
+            for i, a in enumerate(final_answers):
+                rewards[i] = utils.compute_f1(golden_answers[i], a)
+            return rewards
+        
+        return [compute_exact, compute_f1]
+        
     #Overridden
     def _generate_and_score_completions(self, inputs):
-        # TODO IMPORTANT review the code to see if multi-round is truly functional
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
         data = copy.deepcopy(inputs)
@@ -47,7 +69,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]
         
-        # TODO clean up
         prompts_bundled = [list(d["prompt"].values()) for d in data]
         prompt_ids_bundled = [list(d["prompt_ids"].values()) for d in data]  
         prompt_masks_bundled = [list(d["prompt_mask"].values()) for d in data]
@@ -69,12 +90,12 @@ class MultihopGRPOTrainer(GRPOTrainer):
         
         prompts = copy.deepcopy(original_prompts)
         
-        # Prompts padded on the left. Completions padded on the right.
+        # Prompts padded on the left.
         prompt_ids = pad(prompt_ids, padding_value=self.pad_token_id, padding_side="left")
         prompt_mask = pad(prompt_mask, padding_value=0, padding_side="left")
-        
+        # Save original completions lengths for padding later
         original_completions_lengths = torch.tensor([len(t) for t in completion_ids], device=device)
-        
+        # Completions padded on the right
         completion_ids = pad(completion_ids, padding_value=self.pad_token_id, padding_side="right")
         
         # Mask everything after the first EOS token  
@@ -249,7 +270,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
     
     #Overridden
     def _compute_loss(self, model, inputs):
-        
         mode = "train" if self.model.training else "eval"
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
         return super()._compute_loss(model, inputs)
