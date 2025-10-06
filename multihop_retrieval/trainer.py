@@ -1,16 +1,18 @@
 from multihop_retrieval.utils.inference import Inferrer
 from multihop_retrieval.utils import utils
+
 from trl import GRPOTrainer
 from trl.models import unwrap_model_for_generation
 from trl.trainer.grpo_trainer import nanstd
 from trl.data_utils import is_conversational
 from trl.extras.profiling import profiling_context
+from trl.trainer.utils import pad
+
 from accelerate.utils import gather_object
 import copy
 import torch
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from contextlib import nullcontext           
-from torch.nn.utils.rnn import pad_sequence
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
@@ -67,18 +69,25 @@ class MultihopGRPOTrainer(GRPOTrainer):
         
         prompts = copy.deepcopy(original_prompts)
         
-        # TODO check if these are correct
-        prompt_ids = pad_sequence(prompt_ids, batch_first=True, padding_value=self.pad_token_id)
-        prompt_mask = pad_sequence(prompt_mask, batch_first=True, padding_value=self.pad_token_id)
-        completion_ids = pad_sequence(completion_ids, batch_first=True, padding_value=self.pad_token_id)
-
-        # Transplanted from parent class until the reward calculation
-        # Mask everything after the first EOS token
+        # Prompts padded on the left. Completions padded on the right.
+        prompt_ids = pad(prompt_ids, padding_value=self.pad_token_id, padding_side="left")
+        prompt_mask = pad(prompt_mask, padding_value=0, padding_side="left")
+        
+        original_completions_lengths = torch.tensor([len(t) for t in completion_ids], device=device)
+        
+        completion_ids = pad(completion_ids, padding_value=self.pad_token_id, padding_side="right")
+        
+        # Mask everything after the first EOS token  
+        # Transplanted from GRPOTrainer  
         is_eos = completion_ids == self.eos_token_id
         eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
         eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
         sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
+        
+        # New code:
+        default_completions_mask = (sequence_indices < original_completions_lengths.unsqueeze(1)).int()
+        completion_mask = default_completions_mask * completion_mask
 
         # Convert tensor to a list of lists of token IDs. This will be passed to the reward
         # function, avoiding the need to re-tokenize completions if the reward is computed 
@@ -125,9 +134,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         # Apply weights to each reward function's output and sum
         rewards_unbundled = (rewards_unbundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
         rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
-        
-        print(f"rewards_every: {rewards_unbundled}")
-        print(f"rewards_grouped: {rewards_bundled}")
 
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards_bundled.view(-1, self.num_generations).mean(dim=1)
@@ -194,18 +200,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         return output
     
     #Overridden
-    def _compute_loss(self, model, inputs):
-        return super()._compute_loss(model, inputs)
-    
-    #Overridden
-    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False, pixel_values=None, image_grid_thw=None, pixel_attention_mask=None, image_sizes=None):
-        return super()._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, pixel_values, image_grid_thw, pixel_attention_mask, image_sizes)
-
-    #Overridden
-    def _prepare_inputs(self, generation_batch):
-        return super()._prepare_inputs(generation_batch)
-    
-    #Overridden
     def _calculate_rewards(self, inputs, prompts, completions, completion_ids_list, final_answers, errors, bundle_lengths):
         from torch import nn
         import warnings
@@ -252,3 +246,20 @@ class MultihopGRPOTrainer(GRPOTrainer):
         rewards_bundled = gather(rewards_per_func)
         rewards_unbundled = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(rewards_bundled, bundle_lengths)], dim=0)
         return rewards_unbundled, rewards_bundled
+    
+    #Overridden
+    def _compute_loss(self, model, inputs):
+        
+        mode = "train" if self.model.training else "eval"
+        batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        return super()._compute_loss(model, inputs)
+    
+    #Overridden
+    def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False, pixel_values=None, image_grid_thw=None, pixel_attention_mask=None, image_sizes=None):
+        return super()._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, pixel_values, image_grid_thw, pixel_attention_mask, image_sizes)
+
+    #Overridden
+    def _prepare_inputs(self, generation_batch):
+        # probably shouldn't:
+        # inputs = self._buffered_inputs[self._step % self.args.steps_per_generation]
+        return super()._prepare_inputs(generation_batch)
