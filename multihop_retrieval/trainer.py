@@ -49,6 +49,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
         
     #Overridden
     def _generate_and_score_completions(self, inputs):
+        if self.use_vllm or self.use_transformers_paged:
+            raise NotImplementedError()
+        
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
         data = copy.deepcopy(inputs)
@@ -130,9 +133,24 @@ class MultihopGRPOTrainer(GRPOTrainer):
         # Concatenate prompt_mask with completion_mask for logit computation
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
 
-        #TODO ?? I don't know what these do
         old_per_token_logps = None
         ref_per_token_logps = None
+        
+        with torch.no_grad():
+            generate_every = self.args.steps_per_generation * self.num_iterations
+            if self.args.gradient_accumulation_steps % generate_every != 0 or (
+                self.use_vllm and self.vllm_importance_sampling_correction
+            ):
+                # This means generation is misaligned
+                raise NotImplementedError()
+                
+            if self.use_vllm and self.vllm_importance_sampling_correction:
+                # This means generation is misaligned
+                raise NotImplementedError()
+            
+            if self.beta != 0.0:
+                # Reference model should be used
+                raise NotImplementedError()
 
         # Process the generated completions
         if is_conversational(inputs[0]):
