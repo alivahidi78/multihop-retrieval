@@ -1,22 +1,41 @@
 from outlines.models import Transformers
+from outlines.types.dsl import python_types_to_terms, to_regex
+from outlines.backends import get_cfg_logits_processor, get_json_schema_logits_processor, get_regex_logits_processor
+from outlines.types import CFG, JsonSchema
 
 class CustomizedTransformers(Transformers):
     def generate(self, prompts, inputs, output_type = None, **inference_kwargs):
-        logits_processor = self.type_adapter.format_output_type(output_type)
+        backend_name = None
+        model = self
+        term = python_types_to_terms(output_type)
+        if isinstance(term, CFG):
+            cfg_string = term.definition
+            logits_processor = get_cfg_logits_processor(
+                backend_name,
+                model,
+                cfg_string,
+            )
+        elif isinstance(term, JsonSchema):
+            logits_processor = get_json_schema_logits_processor(
+                backend_name,
+                model,
+                term.schema,
+            )
+        else:
+            regex_string = to_regex(term)
+            logits_processor = get_regex_logits_processor(
+                backend_name,
+                model,
+                regex_string,
+            )
+        logits_processor = self.type_adapter.format_output_type(logits_processor)
 
-        #TODO review the code for this method
-        # is_encoder_decoder
         generated_ids = self._generate_output_seq(
             prompts,
             inputs,
             logits_processor=logits_processor,
             **inference_kwargs,
         )
-        # required for multi-modal models that return a 2D tensor even when
-        # num_return_sequences is 1
-        num_samples = inference_kwargs.get("num_return_sequences", 1)
-        if num_samples == 1 and len(generated_ids.shape) == 2:
-            generated_ids = generated_ids.squeeze(0)
 
         return generated_ids
     
@@ -33,3 +52,13 @@ class CustomizedTransformers(Transformers):
             generated_ids = generated_ids.view(len(prompts), num_samples, -1)
 
         return generated_ids
+    
+    def _generate_output_seq(self, prompts, inputs, **inference_kwargs):
+        input_ids = inputs["input_ids"]
+        output_ids = self.model.generate(
+            **inputs,
+            **inference_kwargs,
+        )
+        #TODO review the code for this method
+        # is_encoder_decoder
+        return output_ids

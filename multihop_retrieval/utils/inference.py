@@ -6,13 +6,14 @@ from .utils import Task
 from .retrieval import Retriever
 from outlines.types import Regex
 
-# TODO Priority
-# 1. Does the tokenizer properly encode <tool_call> tags? 
+# TODO Priority 
 # Possibly include the tags as part of the prompt instead.
 # 2. The grammar needs to be much more restrictive and more specialized for separate
 # calls by different methods.
 # 3. Specifically about query construction, a simple list might function better than
 # the same tool call.
+
+# Note: at least the current qwen3 tokenizer currectly encodes the tags
 BASIC_CALL_GRAMMAR = Regex(r"<tool_call>\n\{.*\}\n</tool_call>")
 
 class Inferrer:
@@ -103,7 +104,7 @@ class Inferrer:
             if enforce_grammar:
                 grammar = BASIC_CALL_GRAMMAR
             
-            llm_res = self._call_llm(generation_config, prompt, tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
+            llm_res = self._call_llm(generation_config, prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
             predicted_m = llm_res["completion_decoded"]
             # TODO deal with thought
             response_list.append(predicted_m)
