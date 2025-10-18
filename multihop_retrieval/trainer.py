@@ -26,7 +26,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         if reward_funcs == None:
             reward_funcs = MultihopGRPOTrainer.get_default_reward_functions()
             
-        super().__init__(model, reward_funcs, args, train_dataset, eval_dataset, processing_class, reward_processing_classes, callbacks, optimizers, peft_config)
+        super().__init__(model, reward_funcs=reward_funcs, args=args, train_dataset=train_dataset, eval_dataset=eval_dataset, processing_class=processing_class, reward_processing_classes=reward_processing_classes, callbacks=callbacks, optimizers=optimizers, peft_config=peft_config)
     
     @staticmethod
     def get_default_reward_functions():
@@ -66,7 +66,10 @@ class MultihopGRPOTrainer(GRPOTrainer):
             FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
         ):  
             # A bit of a hackjob to insert _prepare_inputs from transformers trainer into inferrer
-            input_preparation_func = super(GRPOTrainer, self)._prepare_inputs
+            for cls in type(self).__mro__:
+                if cls.__name__ == "Trainer":
+                    input_preparation_func = getattr(cls, "_prepare_inputs").__get__(self, cls)
+                    break
             inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_path, self.tools_path)
             data = inferrer.infer(data, self.generation_config, self.iterations, input_preparation_func=input_preparation_func)
         

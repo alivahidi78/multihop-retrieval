@@ -2,6 +2,7 @@
 slurm_logs/
 results/
 logs/
+unsloth_compiled_cache/
 *.slurm
 *.ipynb
 

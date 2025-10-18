@@ -1,0 +1,136 @@
+import unsloth
+import json, os, copy
+from dotenv import load_dotenv
+from multihop_retrieval.utils.inference import Inferrer 
+from multihop_retrieval.utils.retrieval import Retriever
+from multihop_retrieval.trainer import MultihopGRPOTrainer
+from sentence_transformers import SentenceTransformer
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import faiss
+from tqdm import tqdm
+
+USE_SPLIT = False
+
+if __name__ == "__main__":
+    
+    load_dotenv()
+    BASE_PATH = os.getenv("BASE_PATH")
+    EMBEDDER = os.getenv("EMBEDDER")
+    EMBEDDING_DIR = os.getenv("EMBEDDING_DIR")
+    WIKI_PATH = os.getenv("WIKI_PATH")
+    DATA_PATH = os.getenv("DATA_PATH")
+    MODEL = os.getenv("MODEL")
+    MODEL_CACHE = os.getenv("MODEL_CACHE")
+    PROMPTS_PATH = os.getenv("PROMPTS_PATH")
+    TOOLS_PATH = os.getenv("TOOLS_PATH")
+    OUTPUT_PATH = os.getenv("OUTPUT_PATH")
+    
+    print("Current working directory: ", os.getcwd())
+    print("base path: ", BASE_PATH)
+    print("embedder: ", EMBEDDER)
+    print("embedding dir: ", EMBEDDING_DIR)
+    print("wiki path: ", WIKI_PATH)
+    print("data path: ", DATA_PATH)
+    print("model: ", MODEL)
+    print("model cache: ", MODEL_CACHE)
+    print("prompts path: ", PROMPTS_PATH)
+    print("tools path: ", TOOLS_PATH)
+    print("output path: ", OUTPUT_PATH)
+    
+    limit = 16
+    nprobe = 32
+    iterations = 3
+    
+    embedder = SentenceTransformer(EMBEDDER, device="cuda")
+    chunk_dir =  os.path.join(BASE_PATH, EMBEDDING_DIR)
+    cache_dir = os.path.join(BASE_PATH, MODEL_CACHE)
+    
+    print("embedder loaded.")
+    
+    with open(f"{chunk_dir}/merged_lookup.json", "r") as f:
+        metadata = json.load(f)
+        
+    print("lookup table loaded.")
+    
+    if not USE_SPLIT:
+        cpu_index = faiss.read_index(f"{chunk_dir}/ivf_index.faiss")
+        cpu_index.nprobe = nprobe
+    else:
+        chunk_dir = "../data/minilm-embedded/split"
+        index_files = sorted(f for f in os.listdir(chunk_dir) if f.startswith("ivf_shard") and f.endswith(".faiss"))
+        print(len(index_files))
+        cpu_index = faiss.IndexShards()
+        for fpath in tqdm(index_files):
+            index = faiss.read_index(os.path.join(chunk_dir, fpath))
+            cpu_index.add_shard(index)
+        cpu_index.nprobe = nprobe
+        
+    print("ivf index loaded.")
+    
+    with open(os.path.join(BASE_PATH, DATA_PATH, "./hotpot_train_dev_subset.json"), "r") as f:
+        all_data = json.load(f)
+        
+    print("dataset loaded.")
+    
+    # inferrer = Inferrer.create_with_retriever(BASE_PATH, WIKI_PATH, embedder, cpu_index, metadata, model, tokenizer, PROMPTS_PATH, TOOLS_PATH)
+    
+    # data = all_data[:limit]
+    # data = inferrer.infer(data, iterations=3, use_tqdm=True, logs=True)
+    # with open(os.path.join(BASE_PATH, OUTPUT_PATH, f"./dev_iter_{iterations}_processed_5.json"), "w", encoding="utf-8") as f:
+    #     json.dump(data, f, indent=2, ensure_ascii=False)
+        
+    # print("inference successful.")
+    
+    from trl import GRPOConfig
+    model, tokenizer = unsloth.FastLanguageModel.from_pretrained(
+        model_name = "unsloth/Qwen3-0.6B",
+        max_seq_length = 8000,
+        dtype = None,
+        load_in_4bit = False,
+        fast_inference=False, #needs vllm
+        gpu_memory_utilization=0.9,
+        # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
+    )
+    model = unsloth.FastLanguageModel.get_peft_model(
+        model,
+        r = 64, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+        target_modules = ['q_proj', 'v_proj'],
+        lora_alpha = 64,
+        lora_dropout = 0, # Supports any, but = 0 is optimized
+        bias = "none",    # Supports any, but = "none" is optimized
+        # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
+        use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
+        use_rslora = False,  # We support rank stabilized LoRA
+        loftq_config = None, # And LoftQ
+    )
+    training_args = GRPOConfig(
+        output_dir="./results",
+        logging_dir="./logs",
+        num_generations=8,
+        per_device_train_batch_size=8,
+        logging_steps=5,
+        save_steps=50,
+        num_train_epochs=2,
+        label_names=["labels"],
+        gradient_accumulation_steps = 1,
+        beta = 0.0,
+        # disable_tqdm=True,
+        # eval_steps=200,
+        # eval_strategy="steps",
+        # report_to="none",
+    )
+    
+    retriever = Retriever(BASE_PATH, WIKI_PATH, embedder, cpu_index, metadata)
+    data = copy.deepcopy(all_data[:limit])
+    trainer = MultihopGRPOTrainer(
+        model=model,
+        args=training_args,
+        # iterations = 3,
+        retriever = retriever,
+        prompts_path = PROMPTS_PATH,
+        tools_path = TOOLS_PATH,
+        # reward_funcs=reward_funcs(model),
+        train_dataset = data
+    )
+    
+    trainer.train()

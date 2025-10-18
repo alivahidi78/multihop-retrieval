@@ -44,7 +44,7 @@ class Retriever:
     
     def _query_database(self, text, top_k=5):
         """queries database (probably best to combine with retrieve_info_rag)"""
-        vec = self.embedder.encode([text], convert_to_numpy=True).astype("float32")
+        vec = self.embedder.encode([text], convert_to_numpy=True, show_progress_bar = False).astype("float32")
         distances, indices = self.index.search(vec, top_k)
 
         results = []
