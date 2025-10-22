@@ -71,14 +71,15 @@ class MultihopGRPOTrainer(GRPOTrainer):
                                 supported_ret[i] = True
                     if "information_is_sufficient" in d[f"nothink_gen_iteration_{iteration}"]:
                         if all(supported_ret):
-                            rewards[index] = 5
+                            if exact_rew[index] == 1:
+                                rewards[index] = 5
+                            elif rewards[index] >= 0.5:
+                                rewards[index] = 1
                         elif (True in supported_ret):
                             if exact_rew[index] == 1:
                                 rewards[index] = 5
                             elif rewards[index] >= 0.5:
                                 rewards[index] = 1
-                            else:
-                                rewards[index] = -5
                         else:
                             rewards[index] = -20
                     else:
@@ -88,7 +89,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                         elif (True in supported_ret):
                             pass
                         else:
-                            rewards[index] = 5
+                            rewards[index] = 1
                             
                     index += 1
                     
@@ -96,9 +97,40 @@ class MultihopGRPOTrainer(GRPOTrainer):
                         index += 1
                     iteration += 1
             return rewards
-            
         
-        return [compute_exact, compute_f1, info_decision_judge]
+        def subq_decision_judge(data, final_answers, bundle_lengths, **kwargs):
+            exact_rew = compute_exact(data, final_answers, bundle_lengths, **kwargs)
+            rewards = compute_f1(data, final_answers, bundle_lengths, **kwargs)
+            golden_answers = [example["answer"] for example in data]
+            index = 0
+            for d in data:
+                iteration = 0
+                while(f"nothink_gen_iteration_{iteration}" in d.keys()):
+                    index += 1
+                    
+                    if f"nothink_query_iteration_{iteration}" in d.keys():
+                        supporting_facts = d["supporting_facts"]
+                        context = d["context"]
+                        for k in range(0, iteration + 1):
+                            context = context.copy()
+                            context.extend(d[f"nothink_retrieve_iteration_{k}"])
+                        supported_ret = [False]*len(supporting_facts)
+                        for i, f in enumerate(supporting_facts):
+                            for j, c in enumerate(context):
+                                if(f[0] == c[0]):
+                                    supported_ret[i] = True  
+                                    
+                        if all(supported_ret):
+                            rewards[index] = 2
+                        elif (True in supported_ret):
+                            rewards[index] = 1
+                        else:
+                            rewards[index] = -1
+                        index += 1
+                    iteration += 1
+            return rewards    
+        
+        return [compute_exact, compute_f1, info_decision_judge, subq_decision_judge]
         
     #Overridden
     def _generate_and_score_completions(self, inputs):
