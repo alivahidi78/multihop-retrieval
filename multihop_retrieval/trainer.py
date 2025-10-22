@@ -31,24 +31,80 @@ class MultihopGRPOTrainer(GRPOTrainer):
     @staticmethod
     def get_default_reward_functions():
         
-        def compute_exact(completions, final_answers, **kwargs):
-            rewards = [0]* len(final_answers)
-            golden_answers = kwargs["answer"]
+        def compute_exact(data, final_answers, bundle_lengths, **kwargs):
+            bundled_rewards = [0]* len(final_answers)
+            golden_answers = [example["answer"] for example in data]
             for i, a in enumerate(final_answers):
-                rewards[i] = utils.compute_exact(golden_answers[i], a)
+                bundled_rewards[i] = utils.compute_exact(golden_answers[i], a)
+            rewards = [row for row, n in zip(bundled_rewards, bundle_lengths) for _ in range(n)]
+            return rewards
+            
+        def compute_f1(data, final_answers, bundle_lengths, **kwargs):
+            bundled_rewards = [0]* len(final_answers)
+            golden_answers = [example["answer"] for example in data]
+            for i, a in enumerate(final_answers):
+                bundled_rewards[i] = utils.compute_f1(golden_answers[i], a)
+            rewards = [row for row, n in zip(bundled_rewards, bundle_lengths) for _ in range(n)]
             return rewards
         
-        def compute_f1(completions, final_answers, **kwargs):
-            rewards = [0]* len(final_answers)
-            golden_answers = kwargs["answer"]
-            for i, a in enumerate(final_answers):
-                rewards[i] = utils.compute_f1(golden_answers[i], a)
+        def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):
+            exact_rew = compute_exact(data, final_answers, bundle_lengths, **kwargs)
+            rewards = compute_f1(data, final_answers, bundle_lengths, **kwargs)
+            golden_answers = [example["answer"] for example in data]
+            index = 0
+            for d in data:
+                iteration = 0
+                while(f"nothink_gen_iteration_{iteration}" in d.keys()):
+                    supporting_facts = d["supporting_facts"]
+                    context = d["context"]
+                    if not (iteration == 0):
+                        try:
+                            for k in range(0, iteration):
+                                context = context.copy()
+                                context.extend(d[f"nothink_retrieve_iteration_{k}"])
+                        except KeyError:
+                            print("key error")
+                    supported_ret = [False]*len(supporting_facts)
+                    for i, f in enumerate(supporting_facts):
+                        for j, c in enumerate(context):
+                            if(f[0] == c[0]):
+                                supported_ret[i] = True
+                    if "information_is_sufficient" in d[f"nothink_gen_iteration_{iteration}"]:
+                        if all(supported_ret):
+                            rewards[index] = 5
+                        elif (True in supported_ret):
+                            if exact_rew[index] == 1:
+                                rewards[index] = 5
+                            elif rewards[index] >= 0.5:
+                                rewards[index] = 1
+                            else:
+                                rewards[index] = -5
+                        else:
+                            rewards[index] = -20
+                    else:
+                        # information_not_sufficient
+                        if all(supported_ret):
+                            rewards[index] = -20
+                        elif (True in supported_ret):
+                            pass
+                        else:
+                            rewards[index] = 5
+                            
+                    index += 1
+                    
+                    if f"nothink_query_iteration_{iteration}" in d.keys():
+                        index += 1
+                    iteration += 1
             return rewards
+            
         
-        return [compute_exact, compute_f1]
+        return [compute_exact, compute_f1, info_decision_judge]
         
     #Overridden
     def _generate_and_score_completions(self, inputs):
+        if self.args.num_generations != self.args.per_device_train_batch_size:
+            raise NotImplementedError()
+        
         if self.use_vllm or self.use_transformers_paged:
             raise NotImplementedError()
         
@@ -171,26 +227,23 @@ class MultihopGRPOTrainer(GRPOTrainer):
         
         completions_rebundled = utils.rebundle(processed_completions, bundle_lengths)
         completion_ids_list_rebundled = utils.rebundle(completion_ids_list, bundle_lengths)
-        rewards_unbundled_func, rewards_bundled_func = self._calculate_rewards(inputs, prompts_bundled, completions_rebundled, completion_ids_list_rebundled, final_answers, errors, bundle_lengths)
+        rewards_unbundled_func = self._calculate_rewards(data, final_answers, bundle_lengths)
          
         # Apply weights to each reward function's output and sum
         rewards_unbundled = (rewards_unbundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
-        rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
+        # rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
         # Compute grouped-wise rewards
-        mean_grouped_rewards = rewards_bundled.view(-1, self.num_generations).mean(dim=1)
-        std_grouped_rewards = rewards_bundled.view(-1, self.num_generations).std(dim=1)
+        mean_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).mean(dim=1)
+        std_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).std(dim=1)
         is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
 
         # Normalize the rewards to compute the advantages
-        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        advantages = rewards_bundled - mean_grouped_rewards
+        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(sum(bundle_lengths), dim=0)
+        std_grouped_rewards = std_grouped_rewards.repeat_interleave(sum(bundle_lengths), dim=0)
+        advantages = rewards_unbundled - mean_grouped_rewards
         if self.scale_rewards:
             advantages = advantages / (std_grouped_rewards + 1e-4)
-
-        # Unbundle advantages
-        advantages = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(advantages, bundle_lengths)], dim=0)
         
         # Slice to keep only the local part of the data
         # Note: probably multiple process situation
@@ -208,11 +261,11 @@ class MultihopGRPOTrainer(GRPOTrainer):
 
         # Calculate mean reward per function, but only for samples where the function 
         # was applied (non-NaN values)
-        # Note: these should be bundled
+        # Note: We average unbundled rewards for this
         for i, reward_func_name in enumerate(self.reward_func_names):
-            mean_rewards = torch.nanmean(rewards_bundled_func[:, i]).item()
+            mean_rewards = torch.nanmean(rewards_unbundled_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}/mean"].append(mean_rewards)
-            std_rewards = nanstd(rewards_bundled_func[:, i]).item()
+            std_rewards = nanstd(rewards_unbundled_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}/std"].append(std_rewards)
         self._metrics[mode]["generation_count"].append(sum(bundle_lengths) / len(bundle_lengths))
         self._metrics[mode]["reward"].append(mean_grouped_rewards.mean().item())
@@ -225,7 +278,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         self._logs["prompt"].extend(gather_object(prompts_bundled))
         self._logs["completion"].extend(gather_object(completions_bundled))
         for i, name in enumerate(self.reward_func_names):
-            self._logs["rewards"][name].extend(rewards_bundled_func[:, i].tolist())
+            self._logs["rewards"][name].extend(rewards_unbundled_func[:, i].tolist())
         self._logs["advantages"].extend(all_process_advantages.tolist())
 
         output = {
@@ -243,18 +296,19 @@ class MultihopGRPOTrainer(GRPOTrainer):
         return output
     
     #Overridden
-    def _calculate_rewards(self, inputs, prompts, completions, completion_ids_list, final_answers, errors, bundle_lengths):
+    def _calculate_rewards(self, data, final_answers, bundle_lengths):
         from torch import nn
         import warnings
         from accelerate.utils import gather
         device = self.accelerator.device
-        rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)
+        rewards_per_func = torch.zeros(sum(bundle_lengths), len(self.reward_funcs), device=device)
 
-        # Repeat all input columns (but "prompt", "completion", and "completion_ids") to match the num of generations
-        keys = [key for key in inputs[0] if key not in ["prompt", "completion", "completion_ids"]]
-        reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
+        # # Repeat all input columns (but "prompt", "completion", and "completion_ids") to match the num of generations
+        # keys = [key for key in inputs[0] if key not in ["prompt", "completion", "completion_ids"]]
+        # reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
 
         # This allows for dynamic reward shaping based on training progress.
+        reward_kwargs = {}
         reward_kwargs["trainer_state"] = self.state
 
         for i, (reward_func, reward_processing_class, reward_func_name) in enumerate(
@@ -266,7 +320,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                     raise NotImplementedError()
                 else:
                     output_reward_func = reward_func(
-                        prompts=prompts, completions=completions, completion_ids=completion_ids_list, final_answers=final_answers, errors= errors, **reward_kwargs
+                        data, final_answers=final_answers, bundle_lengths=bundle_lengths, **reward_kwargs
                     )
                     # Convert None values to NaN
                     output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
@@ -274,21 +328,21 @@ class MultihopGRPOTrainer(GRPOTrainer):
                     rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 
         # If all reward functions return None for a given row, issue a detailed warning
-        if torch.isnan(rewards_per_func).all(dim=1).any():
-            nan_row_idx = torch.isnan(rewards_per_func).all(dim=1).nonzero(as_tuple=True)[0][0]
-            row_reward_kwargs = {key: value[nan_row_idx] for key, value in reward_kwargs.items()}
-            row_reward_kwargs["prompt"] = prompts[nan_row_idx]
-            row_reward_kwargs["completion"] = completions[nan_row_idx]
-            warnings.warn(
-                f"All reward functions returned None for the following kwargs: {row_reward_kwargs}. "
-                "Please ensure that at least one reward function returns a valid reward."
-            )
+        # if torch.isnan(rewards_per_func).all(dim=1).any():
+        #     nan_row_idx = torch.isnan(rewards_per_func).all(dim=1).nonzero(as_tuple=True)[0][0]
+        #     row_reward_kwargs = {key: value[nan_row_idx] for key, value in reward_kwargs.items()}
+        #     row_reward_kwargs["prompt"] = prompts[nan_row_idx]
+        #     row_reward_kwargs["completion"] = completions[nan_row_idx]
+        #     warnings.warn(
+        #         f"All reward functions returned None for the following kwargs: {row_reward_kwargs}. "
+        #         "Please ensure that at least one reward function returns a valid reward."
+        #     )
 
         # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
         # completions may be distributed across processes
-        rewards_bundled = gather(rewards_per_func)
-        rewards_unbundled = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(rewards_bundled, bundle_lengths)], dim=0)
-        return rewards_unbundled, rewards_bundled
+        rewards_unbundled = gather(rewards_per_func)
+        # rewards_unbundled = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(rewards_bundled, bundle_lengths)], dim=0)
+        return rewards_unbundled
     
     #Overridden
     def _compute_loss(self, model, inputs):

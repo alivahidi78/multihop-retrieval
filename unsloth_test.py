@@ -8,12 +8,31 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import faiss
 from tqdm import tqdm
+import wandb
 
 USE_SPLIT = False
 
 if __name__ == "__main__":
     
+    train_limit = 500
+    eval_limit = 100
+    nprobe = 32
+    iterations = 3
+    epochs = 1
+    
+    # run_name = "exp-1 (baseline)"
+    # no eval
+    # epochs = 2
+    run_name = "exp-2 (discrete rewards)"
+    
     load_dotenv()
+    WANDB_KEY = os.getenv("WANDB_KEY")
+    wandb.login(key=WANDB_KEY)
+    wandb.init(
+        project="huggingface",
+        name=run_name,
+    )
+    
     BASE_PATH = os.getenv("BASE_PATH")
     EMBEDDER = os.getenv("EMBEDDER")
     EMBEDDING_DIR = os.getenv("EMBEDDING_DIR")
@@ -36,10 +55,6 @@ if __name__ == "__main__":
     print("prompts path: ", PROMPTS_PATH)
     print("tools path: ", TOOLS_PATH)
     print("output path: ", OUTPUT_PATH)
-    
-    limit = 16
-    nprobe = 32
-    iterations = 3
     
     embedder = SentenceTransformer(EMBEDDER, device="cuda")
     chunk_dir =  os.path.join(BASE_PATH, EMBEDDING_DIR)
@@ -108,20 +123,23 @@ if __name__ == "__main__":
         logging_dir="./logs",
         num_generations=8,
         per_device_train_batch_size=8,
+        per_device_eval_batch_size=8,
         logging_steps=5,
-        save_steps=50,
-        num_train_epochs=2,
+        save_steps=100,
+        num_train_epochs= epochs,
         label_names=["labels"],
         gradient_accumulation_steps = 1,
         beta = 0.0,
-        # disable_tqdm=True,
-        # eval_steps=200,
-        # eval_strategy="steps",
-        # report_to="none",
+        eval_on_start=True,
+        eval_steps=50,
+        eval_strategy="steps",
+        report_to="wandb",
+        run_name=run_name
     )
     
     retriever = Retriever(BASE_PATH, WIKI_PATH, embedder, cpu_index, metadata)
-    data = copy.deepcopy(all_data[:limit])
+    train_set = copy.deepcopy(all_data[:train_limit])
+    eval_set = copy.deepcopy(all_data[train_limit:train_limit + eval_limit])
     trainer = MultihopGRPOTrainer(
         model=model,
         args=training_args,
@@ -130,7 +148,8 @@ if __name__ == "__main__":
         prompts_path = PROMPTS_PATH,
         tools_path = TOOLS_PATH,
         # reward_funcs=reward_funcs(model),
-        train_dataset = data
+        train_dataset = train_set,
+        eval_dataset = eval_set
     )
     
     trainer.train()
