@@ -49,7 +49,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
         
         def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):
             exact_rew = compute_exact(data, final_answers, bundle_lengths, **kwargs)
-            rewards = compute_f1(data, final_answers, bundle_lengths, **kwargs)
+            f1_rew = compute_f1(data, final_answers, bundle_lengths, **kwargs)
+            rewards = [0]*len(exact_rew)
             golden_answers = [example["answer"] for example in data]
             index = 0
             for d in data:
@@ -63,7 +64,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                                 context = context.copy()
                                 context.extend(d[f"nothink_retrieve_iteration_{k}"])
                         except KeyError:
-                            print("key error")
+                            print("info key error")
                     supported_ret = [False]*len(supporting_facts)
                     for i, f in enumerate(supporting_facts):
                         for j, c in enumerate(context):
@@ -73,12 +74,12 @@ class MultihopGRPOTrainer(GRPOTrainer):
                         if all(supported_ret):
                             if exact_rew[index] == 1:
                                 rewards[index] = 5
-                            elif rewards[index] >= 0.5:
+                            elif f1_rew[index] >= 0.5:
                                 rewards[index] = 1
                         elif (True in supported_ret):
                             if exact_rew[index] == 1:
                                 rewards[index] = 5
-                            elif rewards[index] >= 0.5:
+                            elif f1_rew[index] >= 0.5:
                                 rewards[index] = 1
                         else:
                             rewards[index] = -20
@@ -100,7 +101,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
         
         def subq_decision_judge(data, final_answers, bundle_lengths, **kwargs):
             exact_rew = compute_exact(data, final_answers, bundle_lengths, **kwargs)
-            rewards = compute_f1(data, final_answers, bundle_lengths, **kwargs)
+            f1_rew = compute_f1(data, final_answers, bundle_lengths, **kwargs)
+            rewards = [0]* len(f1_rew)
             golden_answers = [example["answer"] for example in data]
             index = 0
             for d in data:
@@ -111,7 +113,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                     if f"nothink_query_iteration_{iteration}" in d.keys():
                         supporting_facts = d["supporting_facts"]
                         context = d["context"]
-                        for k in range(0, iteration + 1):
+                        for k in range(0, iteration):
                             context = context.copy()
                             context.extend(d[f"nothink_retrieve_iteration_{k}"])
                         supported_ret = [False]*len(supporting_facts)
@@ -119,14 +121,27 @@ class MultihopGRPOTrainer(GRPOTrainer):
                             for j, c in enumerate(context):
                                 if(f[0] == c[0]):
                                     supported_ret[i] = True  
-                                    
-                        if all(supported_ret):
-                            rewards[index] = 2
-                        elif (True in supported_ret):
-                            rewards[index] = 1
-                        else:
-                            rewards[index] = -1
+                        try:
+                            new_supported_ret = [False]*len(supporting_facts)
+                            new_ret = d[f"nothink_retrieve_iteration_{iteration}"]
+                            for i, f in enumerate(supporting_facts):
+                                for j, c in enumerate(new_ret):
+                                    if(f[0] == c[0]):
+                                        new_supported_ret[i] = True  
+                                        
+                            if all([a or b for a, b in zip(supported_ret, new_supported_ret)]):
+                                rewards[index] = 2
+                            elif all(new_supported_ret):
+                                rewards[index] = 3  
+                            elif (True in [b and (not a) for a, b in zip(supported_ret, new_supported_ret)]):
+                                rewards[index] = 1
+                            else:
+                                rewards[index] = -1
+                        except KeyError:
+                            print("subq key error")
+                            rewards[index] = -20
                         index += 1
+                        
                     iteration += 1
             return rewards    
         

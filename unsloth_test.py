@@ -149,7 +149,8 @@ if __name__ == "__main__":
         tools_path = TOOLS_PATH,
         # reward_funcs=reward_funcs(model),
         train_dataset = train_set,
-        eval_dataset = eval_set
+        eval_dataset = eval_set,
+        unbundled_batching = 8
     )
     
     trainer.train()
