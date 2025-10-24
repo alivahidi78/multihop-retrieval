@@ -16,20 +16,19 @@ from contextlib import nullcontext
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, retriever, tools_path, reward_funcs=None, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None):
+    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None):
         self.iterations = iterations
         self.retriever = retriever
         self.unbundled_batching = unbundled_batching
-        with open(tools_path, 'r') as f:
-            self.prompts_and_tools = json.load(f)
+        self.prompts_and_tools = prompts_and_tools
         
         if reward_funcs == None:
-            reward_funcs = MultihopGRPOTrainer.get_default_reward_functions()
+            reward_funcs = MultihopGRPOTrainer.get_default_reward_functions(self.prompts_and_tools)
             
         super().__init__(model, reward_funcs=reward_funcs, args=args, train_dataset=train_dataset, eval_dataset=eval_dataset, processing_class=processing_class, reward_processing_classes=reward_processing_classes, callbacks=callbacks, optimizers=optimizers, peft_config=peft_config)
     
     @staticmethod
-    def get_default_reward_functions():
+    def get_default_reward_functions(prompts_and_tools):
         
         def compute_exact(data, final_answers, bundle_lengths, **kwargs):
             bundled_rewards = [0]* len(final_answers)
@@ -55,14 +54,14 @@ class MultihopGRPOTrainer(GRPOTrainer):
             index = 0
             for d in data:
                 iteration = 0
-                while(f"nothink_gen_iteration_{iteration}" in d.keys()):
+                while(f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}" in d.keys()):
                     supporting_facts = d["supporting_facts"]
                     context = d["context"]
                     if not (iteration == 0):
                         try:
                             for k in range(0, iteration):
                                 context = context.copy()
-                                context.extend(d[f"nothink_retrieve_iteration_{k}"])
+                                context.extend(d[f"{Inferrer.dict_labels["retrieval_iter"]}_{k}"])
                         except KeyError:
                             print("info key error")
                     supported_ret = [False]*len(supporting_facts)
@@ -70,7 +69,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
                         for j, c in enumerate(context):
                             if(f[0] == c[0]):
                                 supported_ret[i] = True
-                    if "information_is_sufficient" in d[f"nothink_gen_iteration_{iteration}"]:
+                    positive_tag = prompts_and_tools[utils.Task.INFO_CHECK.value]["positive_tag"]
+                    if positive_tag in d[f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"]:
                         if all(supported_ret):
                             if exact_rew[index] == 1:
                                 rewards[index] = 5
@@ -94,7 +94,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                             
                     index += 1
                     
-                    if f"nothink_query_iteration_{iteration}" in d.keys():
+                    if f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}" in d.keys():
                         index += 1
                     iteration += 1
             return rewards
@@ -107,15 +107,15 @@ class MultihopGRPOTrainer(GRPOTrainer):
             index = 0
             for d in data:
                 iteration = 0
-                while(f"nothink_gen_iteration_{iteration}" in d.keys()):
+                while(f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}" in d.keys()):
                     index += 1
                     
-                    if f"nothink_query_iteration_{iteration}" in d.keys():
+                    if f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}" in d.keys():
                         supporting_facts = d["supporting_facts"]
                         context = d["context"]
                         for k in range(0, iteration):
                             context = context.copy()
-                            context.extend(d[f"nothink_retrieve_iteration_{k}"])
+                            context.extend(d[f"{Inferrer.dict_labels["retrieval_iter"]}_{k}"])
                         supported_ret = [False]*len(supporting_facts)
                         for i, f in enumerate(supporting_facts):
                             for j, c in enumerate(context):
@@ -123,7 +123,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                                     supported_ret[i] = True  
                         try:
                             new_supported_ret = [False]*len(supporting_facts)
-                            new_ret = d[f"nothink_retrieve_iteration_{iteration}"]
+                            new_ret = d[f"{Inferrer.dict_labels["retrieval_iter"]}_{iteration}"]
                             for i, f in enumerate(supporting_facts):
                                 for j, c in enumerate(new_ret):
                                     if(f[0] == c[0]):
@@ -150,10 +150,10 @@ class MultihopGRPOTrainer(GRPOTrainer):
     #Overridden
     def _generate_and_score_completions(self, inputs):
         if self.args.num_generations != self.args.per_device_train_batch_size:
-            raise NotImplementedError()
+            raise NotImplementedError("num_generations should be equal to per_device_train_batch_size.")
         
         if self.use_vllm or self.use_transformers_paged:
-            raise NotImplementedError()
+            raise NotImplementedError("use_vllm or use_transformers_paged is not currently supported.")
         
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
@@ -169,10 +169,13 @@ class MultihopGRPOTrainer(GRPOTrainer):
             FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
         ):  
             # A bit of a hackjob to insert _prepare_inputs from transformers trainer into inferrer
+            input_preparation_func = None
             for cls in type(self).__mro__:
                 if cls.__name__ == "Trainer":
                     input_preparation_func = getattr(cls, "_prepare_inputs").__get__(self, cls)
                     break
+            if not input_preparation_func:
+                raise ReferenceError("Cannot find Trainer._prepare_inputs")
             inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools)
             data = inferrer.infer(data, self.generation_config, iterations = self.iterations, input_preparation_func=input_preparation_func)
         
@@ -248,15 +251,15 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 self.use_vllm and self.vllm_importance_sampling_correction
             ):
                 # This means generation is misaligned
-                raise NotImplementedError()
+                raise NotImplementedError("This option is not currently supported.")
                 
             if self.use_vllm and self.vllm_importance_sampling_correction:
                 # This means generation is misaligned
-                raise NotImplementedError()
+                raise NotImplementedError("This option is not currently supported.")
             
             if self.beta != 0.0:
                 # Reference model should be used
-                raise NotImplementedError()
+                raise NotImplementedError("This option is not currently supported.")
 
         # Process the generated completions
         if is_conversational(inputs[0]):
@@ -364,7 +367,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
             with profiling_context(self, reward_func_name):
                 if isinstance(reward_func, nn.Module):  
                     # TODO
-                    raise NotImplementedError()
+                    raise NotImplementedError("models as reward functions are not currently supported.")
                 else:
                     output_reward_func = reward_func(
                         data, final_answers=final_answers, bundle_lengths=bundle_lengths, **reward_kwargs

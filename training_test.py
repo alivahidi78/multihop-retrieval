@@ -34,6 +34,9 @@ if __name__ == "__main__":
     print("tools path: ", TOOLS_PATH)
     print("output path: ", OUTPUT_PATH)
     
+    with open(TOOLS_PATH, 'r') as f:
+        prompts_and_tools = json.load(f)
+    
     limit = 16
     nprobe = 32
     iterations = 3
@@ -73,7 +76,7 @@ if __name__ == "__main__":
         
     print("dataset loaded.")
     
-    inferrer = Inferrer.create_with_retriever(WIKI_PATH, embedder, cpu_index, metadata, model, tokenizer, TOOLS_PATH)
+    inferrer = Inferrer.create_with_retriever(WIKI_PATH, embedder, cpu_index, metadata, model, tokenizer, prompts_and_tools)
     
     data = all_data[:limit]
     data = inferrer.infer(data, iterations=3, use_tqdm=True, logs=True)
@@ -115,8 +118,8 @@ if __name__ == "__main__":
         args=training_args,
         # iterations = 3,
         retriever = retriever,
-        tools_path = TOOLS_PATH,
-        # reward_funcs=reward_funcs(model),
+        prompts_and_tools = prompts_and_tools,
+        # reward_funcs=reward_funcs(prompts_and_tools),
         train_dataset = data,
         peft_config = lora_config,
     )

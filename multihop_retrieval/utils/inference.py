@@ -8,6 +8,18 @@ from .retrieval import Retriever
 from outlines.types import Regex
 
 class Inferrer:
+    
+    dict_labels = {
+        "retrieval_iter": "nothink_retrieve_iteration",
+        "info_check_iter": "nothink_gen_iteration",
+        "subq_construct_iter": "nothink_query_iteration"
+    }
+    
+    task_labels = {
+        "info_check_iter": "info",
+        "subq_construct_iter": "subq"
+    }
+    
     def __init__(self, retriever, model, tokenizer, prompts_and_tools):
         self.input_preparation_func = None
         self.retriever = retriever
@@ -16,8 +28,8 @@ class Inferrer:
         self.prompts_and_tools = prompts_and_tools
     
     @classmethod    
-    def create_with_retriever(cls, wiki_path, embedder, index, metadata, model, tokenizer, prompts_path, tools_path):
-        return cls(Retriever(wiki_path, embedder, index, metadata), model, tokenizer, prompts_path, tools_path) 
+    def create_with_retriever(cls, wiki_path, embedder, index, metadata, model, tokenizer, prompts_and_tools):
+        return cls(Retriever(wiki_path, embedder, index, metadata), model, tokenizer, prompts_and_tools) 
       
     #################################### retrieval ####################################  
       
@@ -40,37 +52,24 @@ class Inferrer:
         return data
     
     def retrieval_iter(self, data, iteration, use_tqdm=True, logs=True):
-        subq_json = self.prompts_and_tools[Task.SUBQUERY_CONSTRUCT.value]
         query_count= 0
         error_count= 0
         for i in tqdm(range(len(data)), disable= not use_tqdm, desc=f"iter_{iteration}_2_ret"):
             try:
-                value = data[i][f"nothink_query_iteration_{iteration}"]
+                subqueries = data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"]
                 query_count += 1
             except KeyError:
+                # TODO warn
+                error_count += 1
                 continue
-            tool_call_use = subq_json["tool_call"]
-            if tool_call_use:
-                arguments = subq_json["response_params"]
-                subqueries, error_desc = utils.extract_arg_values(value, arguments)
-            else:
-                pattern = subq_json["pattern"]
-                regex_groups = subq_json["regex_groups"]
-                match = re.search(pattern, value)
-                subqueries = []
-                if match:
-                    for g in regex_groups:
-                        if match.group(g):
-                            subqueries.append(match.group(g))
-                else:
-                    raise ValueError("the query output is malformed.")
+            
             if(not subqueries):
                 error_count += 1
             else:
                 context_add = self.retriever.retrieve_info_rag(subqueries)
                 flat_context_add = [item for sublist in context_add for item in sublist]
                 result = [[d["title"], d["full_text"]] for d in flat_context_add]
-                data[i][f"nothink_retrieve_iteration_{iteration}"] = result
+                data[i][f"{Inferrer.dict_labels["retrieval_iter"]}_{iteration}"] = result
         if logs:
             print(f"{iteration} total queries: {query_count}\nerrors: {error_count}")
         return data
@@ -86,7 +85,7 @@ class Inferrer:
     def info_check_iter(self, data, iteration, generation_config, enforce_grammar=True, add_onehop = False, ignore_ids=False, use_tqdm = True):
         prompt_list = []
         response_list = []
-        col_name = f"nothink_gen_iteration_{iteration}"
+        col_name = f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"
         for i in tqdm(range(0, len(data), 1), disable = not use_tqdm, desc=f"iter_{iteration}_0_gen"):
             selected = data[i]
             query = selected["question"]
@@ -111,7 +110,7 @@ class Inferrer:
             try:
                 data[i][col_name] = predicted_m
                 if not ignore_ids:
-                    data = self._append_llm_res(data, llm_res, i, iteration, "info")
+                    data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.task_labels["info_check_iter"])
                 if add_onehop:
                     data[i]["onehop"] = predicted_o
             except Exception as e:
@@ -142,12 +141,13 @@ class Inferrer:
         prompt_list = []
         response_list = []
         for i in tqdm(range(0, len(data), 1), disable= not use_tqdm, desc=f"iter_{iteration}_1_2q"):
+            subq_json = self.prompts_and_tools[Task.SUBQUERY_CONSTRUCT.value]
             selected = data[i]
             query = selected["question"]
             context = selected["context"]
             context = self._get_deduplicated_context(context, iteration, selected)
             try:
-                prev_response = selected[f"nothink_gen_iteration_{iteration}"]
+                prev_response = selected[f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"]
             except KeyError:
                 # TODO warning
                 continue
@@ -160,16 +160,29 @@ class Inferrer:
             
             grammar = None
             if enforce_grammar:
-                grammar = Regex(self.prompts_and_tools[Task.SUBQUERY_CONSTRUCT.value]["pattern"])
+                grammar = Regex(subq_json["pattern"])
             
             llm_res = self._call_llm(generation_config, prompt, grammar=grammar, tools=tools)
-            subquery = llm_res["completion_decoded"]
-            response_list.append(subquery)
-            
+            llm_output = llm_res["completion_decoded"]
+            tool_call_use = subq_json["tool_call"]
+            if tool_call_use:
+                arguments = subq_json["response_params"]
+                subqueries, error_desc = utils.extract_arg_values(llm_output, arguments)
+            else:
+                pattern = subq_json["pattern"]
+                regex_groups = subq_json["regex_groups"]
+                match = re.search(pattern, llm_output)
+                subqueries = []
+                if match:
+                    for g in regex_groups:
+                        if match.group(g):
+                            subqueries.append(match.group(g))
+                else:
+                    raise ValueError("the query output is malformed.")
             try:
-                data[i][f"nothink_query_iteration_{iteration}"] = subquery
+                data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"] = subqueries
                 if not ignore_ids:
-                    data = self._append_llm_res(data, llm_res, i, iteration, "subq")
+                    data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.task_labels["subq_construct_iter"])
             except Exception as e:
                 print(f"exception at {i}")
         return data, prompt_list, response_list
@@ -188,8 +201,8 @@ class Inferrer:
 
             # check from iteration_3 down to iteration_0
             for i in range(iterations, -1, -1):
-                key = f"nothink_gen_iteration_{i}"
-                query_key= f"nothink_query_iteration_{i}"
+                key = f"{Inferrer.dict_labels["info_check_iter"]}_{i}"
+                query_key= f"{Inferrer.dict_labels["subq_construct_iter"]}_{i}"
                 if key in d and isinstance(d[key], str):
                     content = d[key]
 
@@ -234,7 +247,7 @@ class Inferrer:
         if not (iteration == 0):
             try:
                 for k in range(0, iteration):
-                    context.extend(selected_datum[f"nothink_retrieve_iteration_{k}"])
+                    context.extend(selected_datum[f"{Inferrer.dict_labels["retrieval_iter"]}_{k}"])
             except KeyError:
                 # TODO warning
                 pass
@@ -282,7 +295,7 @@ class Inferrer:
         
         # Note: thinking is disabled for now
         if(enable_thinking):
-            raise NotImplementedError()
+            raise NotImplementedError("Thinking is currently disabled.")
         # modified_config = GenerationConfig.from_dict(generation_config.to_dict())
         # modified_config.max_new_tokens = 25
         
