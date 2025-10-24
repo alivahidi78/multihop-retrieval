@@ -1,0 +1,49 @@
+{
+    "INFO_CHECK": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nConsider if the provided context is enough to respond to the user query:\nContext:\n$context\n\nIf the information is enough, start your response with information_is_sufficient and then add a short final answer after a colon. Keep your answer to one expression or word. If the information is not enough, simply output information_not_sufficient."
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": null,
+        "tool_call": false,
+        "pattern": "^(information_is_sufficient:\\s*(.+)|information_not_sufficient)$",
+        "positive_sample": "information_is_sufficient",
+        "negative_sample": "information_not_sufficient"
+    },
+    "SUBQUERY_CONSTRUCT": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink about what pieces of information are missing and come up with multiple search queries (similar to google search) whose answer aids in finding the missing pieces of information. List these queries in your response.\nDO NOT REPEAT THE USER QUERY.Ask simpler questions instead.\nContext:\n$context\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": null,
+        "tool_call": false,
+        "pattern": "^1\\.\\s(.+)\r?\n2\\.\\s(.+)(?:\r?\n3\\.\\s(.+))?(?:\r?\n4\\.\\s(.+))?$"
+    },
+    "SHORT_ANSWER": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nRespond to the user's query based on the provided context.\nContext:\n$context\n\nKeep your responses short. If possible to one expression or one word.\n\nExamples:\nUser: Is Antarctica in the North or South of the Planet?\nAssistant: South\n\nUser: Has there ever been a human on Mars before 2022?\nAssistant: No\n\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": null,
+        "tool_call": false,
+        "pattern": "^.*$"
+    }
+}

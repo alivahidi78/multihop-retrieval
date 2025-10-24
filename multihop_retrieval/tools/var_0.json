@@ -1,0 +1,116 @@
+{
+    "INFO_CHECK": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nConsider if the provided context is enough to respond to the query:\nContext:\n$context\n\nUse the correct tool to react to the situation.\nALWAYS USE ONE TOOL.\nOne and only one tool is applicable for each user query.\nMake sure to include a tool call in your response.\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "information_not_sufficient",
+                    "description": "Indicate that information given in the context is NOT sufficient to respond to the query",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "information_is_sufficient",
+                    "description": "Indicate that information given in the context is sufficient to respond to the query.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "answer": {
+                                "type": "string",
+                                "description": "A short response (one word or expression) to the query based on context"
+                            }
+                        },
+                        "required": [
+                            "answer"
+                        ]
+                    }
+                }
+            }
+        ],
+        "tool_call": true,
+        "response_params": ["answer"],
+        "pattern": "<tool_call>\n\\{.*\\}\n</tool_call>",
+        "positive_sample": "information_is_sufficient",
+        "negative_sample": "information_not_sufficient"
+    },
+    "SUBQUERY_CONSTRUCT": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink step by step about what pieces of information are missing.\nCome up with multiple SIMPLE questions and use retrieve_info with the new query(s).\nBE SURE TO INCLUDE at least one retrieve_info request in your response.\nDO NOT JUST REPEAT THE USER QUERY.\nAsk simpler questions instead.\nContext:\n$context\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "retrieve_info",
+                    "description": "Retrieve info relevant to a query.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "subquery1": {
+                                "type": "string",
+                                "description": "A simplified subquery whose answer could help in responding to the user"
+                            },
+                            "subquery2": {
+                                "type": "string",
+                                "description": "Another simplified subquery independent of the first"
+                            },
+                            "subquery3": {
+                                "type": "string",
+                                "description": "Another simplified subquery if needed"
+                            },
+                            "subquery4": {
+                                "type": "string",
+                                "description": "Another simplified subquery if needed"
+                            }
+                        },
+                        "required": [
+                            "subquery1",
+                            "subquery2"
+                        ]
+                    }
+                }
+            }
+        ],
+        "tool_call": true,
+        "response_params": ["subquery1", "subquery2", "subquery3", "subquery4"],
+        "pattern": "<tool_call>\n\\{.*\\}\n</tool_call>"
+    },
+    "SHORT_ANSWER": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nRespond to the user's query based on the provided context.\nContext:\n$context\n\nKeep your responses short. If possible to one expression or one word.\n\nExamples:\nUser: Is Antarctica in the North or South of the Planet?\nAssistant: South\n\nUser: Has there ever been a human on Mars before 2022?\nAssistant: No\n\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": null,
+        "tool_call": false,
+        "pattern": "^.*$"
+    }
+}

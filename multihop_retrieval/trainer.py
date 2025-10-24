@@ -90,7 +90,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                         elif (True in supported_ret):
                             pass
                         else:
-                            rewards[index] = 1
+                            rewards[index] = 10
                             
                     index += 1
                     
@@ -174,7 +174,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                     input_preparation_func = getattr(cls, "_prepare_inputs").__get__(self, cls)
                     break
             inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_path, self.tools_path)
-            data = inferrer.infer(data, self.generation_config, self.iterations, input_preparation_func=input_preparation_func)
+            data = inferrer.infer(data, self.generation_config, iterations = self.iterations, input_preparation_func=input_preparation_func)
         
         final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]

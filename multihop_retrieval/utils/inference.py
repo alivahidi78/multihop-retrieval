@@ -6,15 +6,12 @@ from .utils import Task
 from .retrieval import Retriever
 from outlines.types import Regex
 
-# TODO Priority 
-# Possibly include the tags as part of the prompt instead.
-# 2. The grammar needs to be much more restrictive and more specialized for separate
-# calls by different methods.
-# 3. Specifically about query construction, a simple list might function better than
-# the same tool call.
-
+# TODO
+# 1. Possibly include the tags as part of the prompt instead.
+# 2. The grammar needs to be much more restrictive.
 # Note: at least the current qwen3 tokenizer currectly encodes the tags
 BASIC_CALL_GRAMMAR = Regex(r"<tool_call>\n\{.*\}\n</tool_call>")
+LIST_GRAMMAR = Regex(r"^1\..+\n2\..+(?:\n\d+\..+)*\n?$") #TODO
 
 class Inferrer:
     def __init__(self, retriever, model, tokenizer, prompts_path, tools_path):
@@ -87,15 +84,7 @@ class Inferrer:
             selected = data[i]
             query = selected["question"]
             context = selected["context"]
-            if not (iteration == 0):
-                try:
-                    for k in range(0, iteration):
-                        context = context.copy()
-                        context.extend(selected[f"nothink_retrieve_iteration_{k}"])
-                except KeyError:
-                    # TODO do caching before this
-                    continue
-
+            context = self._get_deduplicated_context(context, iteration, selected)
             tools = self._get_tools(Task.INFO_CHECK)
             prompt = self._get_prompts(Task.INFO_CHECK, query, context)
             prompt_list.append(prompt)
@@ -121,6 +110,21 @@ class Inferrer:
             except Exception as e:
                 print(f"exception at {i}")
         return data, prompt_list, response_list
+    
+    def _get_deduplicated_context(self, context, iteration, selected_datum):
+        context = context.copy()
+        if not (iteration == 0):
+            try:
+                for k in range(0, iteration):
+                    context.extend(selected_datum[f"nothink_retrieve_iteration_{k}"])
+            except KeyError:
+                # TODO
+                pass
+        unique = {}
+        for k, v in context:
+            unique[k] = v 
+        context = [[k, v] for k, v in unique.items()]
+        return context
     
     def _append_llm_res(self, data, llm_res, data_num, iteration, step_name):
         i = data_num
@@ -247,9 +251,11 @@ class Inferrer:
             selected = data[i]
             query = selected["question"]
             context = selected["context"]
+            context = self._get_deduplicated_context(context, iteration, selected)
             try:
                 prev_response = selected[f"nothink_gen_iteration_{iteration}"]
             except KeyError:
+                # TODO
                 continue
 
             if(self._check_done(prev_response)):
