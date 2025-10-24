@@ -45,9 +45,9 @@
         ],
         "tool_call": true,
         "response_params": ["answer"],
-        "pattern": "<tool_call>\n\\{.*\\}\n</tool_call>",
-        "positive_sample": "information_is_sufficient",
-        "negative_sample": "information_not_sufficient"
+        "pattern": "<tool_call>\n(\\{.*\\})\n</tool_call>",
+        "positive_tag": "information_is_sufficient",
+        "negative_tag": "information_not_sufficient"
     },
     "SUBQUERY_CONSTRUCT": {
         "prompt": [
@@ -96,7 +96,7 @@
         ],
         "tool_call": true,
         "response_params": ["subquery1", "subquery2", "subquery3", "subquery4"],
-        "pattern": "<tool_call>\n\\{.*\\}\n</tool_call>"
+        "pattern": "<tool_call>\n(\\{.*\\})\n</tool_call>"
     },
     "SHORT_ANSWER": {
         "prompt": [

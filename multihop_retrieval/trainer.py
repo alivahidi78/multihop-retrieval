@@ -9,19 +9,19 @@ from trl.extras.profiling import profiling_context
 from trl.trainer.utils import pad
 
 from accelerate.utils import gather_object
-import copy
+import copy, json, os
 import torch
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from contextlib import nullcontext           
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, retriever, prompts_path, tools_path, reward_funcs=None, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None):
+    def __init__(self, model, retriever, tools_path, reward_funcs=None, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None):
         self.iterations = iterations
         self.retriever = retriever
-        self.prompts_path = prompts_path
-        self.tools_path = tools_path
         self.unbundled_batching = unbundled_batching
+        with open(tools_path, 'r') as f:
+            self.prompts_and_tools = json.load(f)
         
         if reward_funcs == None:
             reward_funcs = MultihopGRPOTrainer.get_default_reward_functions()
@@ -173,7 +173,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 if cls.__name__ == "Trainer":
                     input_preparation_func = getattr(cls, "_prepare_inputs").__get__(self, cls)
                     break
-            inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_path, self.tools_path)
+            inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools)
             data = inferrer.infer(data, self.generation_config, iterations = self.iterations, input_preparation_func=input_preparation_func)
         
         final_answers = [d[f"multihop{self.iterations}"] for d in data]

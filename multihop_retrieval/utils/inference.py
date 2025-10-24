@@ -1,4 +1,5 @@
-import torch, re, json, time
+import torch, re, json, time, os
+from tqdm import tqdm
 from transformers.generation.configuration_utils import GenerationConfig
 from multihop_retrieval.utils import utils
 from multihop_retrieval.utils.outlines_transformers import CustomizedTransformers
@@ -6,33 +7,24 @@ from .utils import Task
 from .retrieval import Retriever
 from outlines.types import Regex
 
-# TODO
-# 1. Possibly include the tags as part of the prompt instead.
-# 2. The grammar needs to be much more restrictive.
-# Note: at least the current qwen3 tokenizer currectly encodes the tags
-BASIC_CALL_GRAMMAR = Regex(r"<tool_call>\n\{.*\}\n</tool_call>")
-LIST_GRAMMAR = Regex(r"^1\..+\n2\..+(?:\n\d+\..+)*\n?$") #TODO
-
 class Inferrer:
-    def __init__(self, retriever, model, tokenizer, prompts_path, tools_path):
+    def __init__(self, retriever, model, tokenizer, prompts_and_tools):
         self.input_preparation_func = None
         self.retriever = retriever
         self.model = model
         self.tokenizer = tokenizer
-        self.prompts_path = prompts_path
-        self.tools_path = tools_path
-        self.base_path = retriever.base_path
+        self.prompts_and_tools = prompts_and_tools
     
     @classmethod    
-    def create_with_retriever(cls,  base_path, wiki_path, embedder, index, metadata, model, tokenizer, prompts_path, tools_path):
-        return cls(Retriever(base_path, wiki_path, embedder, index, metadata), model, tokenizer, prompts_path, tools_path) 
+    def create_with_retriever(cls, wiki_path, embedder, index, metadata, model, tokenizer, prompts_path, tools_path):
+        return cls(Retriever(wiki_path, embedder, index, metadata), model, tokenizer, prompts_path, tools_path) 
       
     #################################### retrieval ####################################  
       
-    def retrieve_init(self, data, use_tqdm=True, logs=True):
+    def retrieval_init(self, data, use_tqdm=True, logs=True):
         query_count= 0
         error_count= 0
-        for i in utils.cond_tqdm(range(len(data)), use_tqdm=use_tqdm, desc=f"init_ret"):
+        for i in tqdm(range(len(data)), disable=not use_tqdm, desc=f"init_ret"):
             try:
                 value = data[i][f"question"]
                 query_count += 1
@@ -47,17 +39,32 @@ class Inferrer:
             print(f"init total queries: {query_count}\nerrors: {error_count}")
         return data
     
-    def retrieve_info_iter(self, data, iteration, use_tqdm=True, logs=True):
+    def retrieval_iter(self, data, iteration, use_tqdm=True, logs=True):
+        subq_json = self.prompts_and_tools[Task.SUBQUERY_CONSTRUCT.value]
         query_count= 0
         error_count= 0
-        for i in utils.cond_tqdm(range(len(data)), use_tqdm=use_tqdm, desc=f"iter_{iteration}_2_ret"):
+        for i in tqdm(range(len(data)), disable= not use_tqdm, desc=f"iter_{iteration}_2_ret"):
             try:
                 value = data[i][f"nothink_query_iteration_{iteration}"]
                 query_count += 1
             except KeyError:
                 continue
-            subqueries, error_desc = utils.extract_subqueries(value)
-            if(subqueries == None):
+            tool_call_use = subq_json["tool_call"]
+            if tool_call_use:
+                arguments = subq_json["response_params"]
+                subqueries, error_desc = utils.extract_arg_values(value, arguments)
+            else:
+                pattern = subq_json["pattern"]
+                regex_groups = subq_json["regex_groups"]
+                match = re.search(pattern, value)
+                subqueries = []
+                if match:
+                    for g in regex_groups:
+                        if match.group(g):
+                            subqueries.append(match.group(g))
+                else:
+                    raise ValueError("the query output is malformed.")
+            if(not subqueries):
                 error_count += 1
             else:
                 context_add = self.retriever.retrieve_info_rag(subqueries)
@@ -68,10 +75,10 @@ class Inferrer:
             print(f"{iteration} total queries: {query_count}\nerrors: {error_count}")
         return data
     
-    #################################### generation #################################### 
+    #################################### info_check #################################### 
     
     def one_hop(self, query, context, generation_config, thinking=False):
-        prompt = self._get_prompts(Task.SHORT_ANSWER, query, context)
+        prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context)
         llm_res = self._call_llm(generation_config, prompt, enable_thinking=thinking, skip_special_tokens=True)
         #TODO deal with thought
         return llm_res["completion_decoded"]
@@ -80,18 +87,18 @@ class Inferrer:
         prompt_list = []
         response_list = []
         col_name = f"nothink_gen_iteration_{iteration}"
-        for i in utils.cond_tqdm(range(0, len(data), 1), use_tqdm = use_tqdm, desc=f"iter_{iteration}_0_gen"):
+        for i in tqdm(range(0, len(data), 1), disable = not use_tqdm, desc=f"iter_{iteration}_0_gen"):
             selected = data[i]
             query = selected["question"]
             context = selected["context"]
             context = self._get_deduplicated_context(context, iteration, selected)
-            tools = self._get_tools(Task.INFO_CHECK)
-            prompt = self._get_prompts(Task.INFO_CHECK, query, context)
+            tools = utils.get_tools(self.prompts_and_tools, Task.INFO_CHECK)
+            prompt = utils.get_prompts(self.prompts_and_tools, Task.INFO_CHECK, query=query, context=context)
             prompt_list.append(prompt)
 
             grammar = None
             if enforce_grammar:
-                grammar = BASIC_CALL_GRAMMAR
+                grammar = Regex(self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"])
             
             llm_res = self._call_llm(generation_config, prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
             predicted_m = llm_res["completion_decoded"]
@@ -111,21 +118,6 @@ class Inferrer:
                 print(f"exception at {i}")
         return data, prompt_list, response_list
     
-    def _get_deduplicated_context(self, context, iteration, selected_datum):
-        context = context.copy()
-        if not (iteration == 0):
-            try:
-                for k in range(0, iteration):
-                    context.extend(selected_datum[f"nothink_retrieve_iteration_{k}"])
-            except KeyError:
-                # TODO
-                pass
-        unique = {}
-        for k, v in context:
-            unique[k] = v 
-        context = [[k, v] for k, v in unique.items()]
-        return context
-    
     def _append_llm_res(self, data, llm_res, data_num, iteration, step_name):
         i = data_num
         labels = ["prompt", "prompt_ids", "prompt_mask", "thought_and_completion_ids",
@@ -136,25 +128,121 @@ class Inferrer:
                 data[i][label] = dict()
             data[i][label].update({
                 f"{iteration}_{step_name}": llm_res[label],
-            })   
-            # if iteration not in data[i][label].keys():
-            #     data[i][label][iteration] = dict()
-            # data[i][label][iteration].update({
-            #     step_name: llm_res[label]
-            # })
-            # data[i][label][iteration].update({
-            #     step_name: llm_res[label]
-            # })            
+            })          
         return data    
     
-    def _get_tools(self, task):
-        return utils.get_tools(self.base_path, self.tools_path, task)
-        
-    def _get_prompts(self, task, query, context = None):
-        return utils.get_prompts(self.base_path, self.prompts_path, task, query, context)
-    
     def _check_done(self, response):
-        return "information_is_sufficient" in response
+        positive_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["positive_tag"]
+        negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
+        return positive_tag in response
+    
+    #################################### subq_construct ####################################
+    
+    def subq_construct_iter(self, data, iteration, generation_config, enforce_grammar=True, ignore_ids=False, use_tqdm=True):
+        prompt_list = []
+        response_list = []
+        for i in tqdm(range(0, len(data), 1), disable= not use_tqdm, desc=f"iter_{iteration}_1_2q"):
+            selected = data[i]
+            query = selected["question"]
+            context = selected["context"]
+            context = self._get_deduplicated_context(context, iteration, selected)
+            try:
+                prev_response = selected[f"nothink_gen_iteration_{iteration}"]
+            except KeyError:
+                # TODO warning
+                continue
+
+            if(self._check_done(prev_response)):
+                continue
+            tools = utils.get_tools(self.prompts_and_tools, Task.SUBQUERY_CONSTRUCT)
+            prompt = utils.get_prompts(self.prompts_and_tools, Task.SUBQUERY_CONSTRUCT, query=query, context=context)
+            prompt_list.append(prompt)
+            
+            grammar = None
+            if enforce_grammar:
+                grammar = Regex(self.prompts_and_tools[Task.SUBQUERY_CONSTRUCT.value]["pattern"])
+            
+            llm_res = self._call_llm(generation_config, prompt, grammar=grammar, tools=tools)
+            subquery = llm_res["completion_decoded"]
+            response_list.append(subquery)
+            
+            try:
+                data[i][f"nothink_query_iteration_{iteration}"] = subquery
+                if not ignore_ids:
+                    data = self._append_llm_res(data, llm_res, i, iteration, "subq")
+            except Exception as e:
+                print(f"exception at {i}")
+        return data, prompt_list, response_list
+    
+    #################################### finalize ####################################
+        
+    def finalize_data(self, data, iterations = 3):
+        positive_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["positive_tag"]
+        negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
+        info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
+        tool_call_use =  self.prompts_and_tools[Task.INFO_CHECK.value]["tool_call"]
+
+        for d in data:
+            d[f"multihop{iterations}"] = ""
+            d["error"] = ""
+
+            # check from iteration_3 down to iteration_0
+            for i in range(iterations, -1, -1):
+                key = f"nothink_gen_iteration_{i}"
+                query_key= f"nothink_query_iteration_{i}"
+                if key in d and isinstance(d[key], str):
+                    content = d[key]
+
+                    if query_key in d:
+                        d["error"] = "query"
+                        break
+
+                    if negative_tag in content:
+                        d["error"] = "info"
+                        break
+                    if tool_call_use:
+                        match = re.search(info_pattern, content)
+                        if not match:
+                            d["error"] = "format"
+                        else:
+                            try:
+                                tool_call_desc = json.loads(match.group(1))
+                                name = tool_call_desc.get("name", "")
+                                args = tool_call_desc.get("arguments", {})
+
+                                if name == positive_tag:
+                                    d[f"multihop{iterations}"] = args.get("answer", "")
+                                else:
+                                    d["error"] = "format"
+                            except Exception:
+                                d["error"] = "format"
+                    else:
+                        match = re.search(info_pattern, content)
+                        if not match:
+                            d["error"] = "format"
+                        elif match.group(1):
+                            d[f"multihop{iterations}"] = match.group(1)
+                        else:
+                            d["error"] = "format"
+                    break  # stop after first valid key
+        return data
+    
+    #################################### internal ####################################
+    
+    def _get_deduplicated_context(self, context, iteration, selected_datum):
+        context = context.copy()
+        if not (iteration == 0):
+            try:
+                for k in range(0, iteration):
+                    context.extend(selected_datum[f"nothink_retrieve_iteration_{k}"])
+            except KeyError:
+                # TODO warning
+                pass
+        unique = {}
+        for k, v in context:
+            unique[k] = v 
+        context = [[k, v] for k, v in unique.items()]
+        return context
     
     def _call_llm(self, generation_config, prompt, grammar = None, tools = None, skip_special_tokens=False, enable_thinking=False):
         #TODO is it never batched?
@@ -242,101 +330,19 @@ class Inferrer:
             "completion_decoded": completion,
         }
     
-    #################################### subquery ####################################
-    
-    def infer_subquery_iter(self, data, iteration, generation_config, enforce_grammar=True, ignore_ids=False, use_tqdm=True):
-        prompt_list = []
-        response_list = []
-        for i in utils.cond_tqdm(range(0, len(data), 1), use_tqdm=use_tqdm, desc=f"iter_{iteration}_1_2q"):
-            selected = data[i]
-            query = selected["question"]
-            context = selected["context"]
-            context = self._get_deduplicated_context(context, iteration, selected)
-            try:
-                prev_response = selected[f"nothink_gen_iteration_{iteration}"]
-            except KeyError:
-                # TODO
-                continue
-
-            if(self._check_done(prev_response)):
-                continue
-            tools = self._get_tools(Task.SUBQUERY_CONSTRUCT)
-            prompt = self._get_prompts(Task.SUBQUERY_CONSTRUCT, query, context)
-            prompt_list.append(prompt)
-            
-            grammar = None
-            if enforce_grammar:
-                grammar = BASIC_CALL_GRAMMAR
-            
-            llm_res = self._call_llm(generation_config, prompt, grammar=grammar, tools=tools)
-            subquery = llm_res["completion_decoded"]
-            response_list.append(subquery)
-            
-            try:
-                data[i][f"nothink_query_iteration_{iteration}"] = subquery
-                if not ignore_ids:
-                    data = self._append_llm_res(data, llm_res, i, iteration, "subq")
-            except Exception as e:
-                print(f"exception at {i}")
-        return data, prompt_list, response_list
-    
     #################################### main ####################################
-        
-    def finalize_data(self, data, iterations = 3):
-        tool_pattern = re.compile(
-            r">\s*(\{.*?\})\s*<",
-            re.DOTALL
-        )
-
-        for d in data:
-            d[f"multihop{iterations}"] = ""
-            d["error"] = ""
-
-            # check from iteration_3 down to iteration_0
-            for i in range(iterations, -1, -1):
-                key = f"nothink_gen_iteration_{i}"
-                query_key= f"nothink_query_iteration_{i}"
-                if key in d and isinstance(d[key], str):
-                    content = d[key]
-
-                    if query_key in d:
-                        d["error"] = "query"
-                        break
-
-                    if "information_not_sufficient" in content:
-                        d["error"] = "info"
-                        break
-
-                    match = tool_pattern.search(content)
-                    if not match:
-                        d["error"] = "format"
-                    else:
-                        try:
-                            tool_call = json.loads(match.group(1))
-                            name = tool_call.get("name", "")
-                            args = tool_call.get("arguments", {})
-
-                            if name == "information_is_sufficient":
-                                d[f"multihop{iterations}"] = args.get("answer", "")
-                            else:
-                                d["error"] = "format"
-                        except Exception:
-                            d["error"] = "format"
-
-                    break  # stop after first valid key
-        return data
     
     #TODO put some of the parameters inside config
     def infer(self, data, generation_config, enforce_grammar=True, iterations=3, start_iter=0, use_tqdm=False, logs=False, add_onehop=False, calculate_time=False, ignore_ids=False, input_preparation_func=None):
         self.input_preparation_func = input_preparation_func
         timer_start = time.time()
         if start_iter == 0:
-            data = self.retrieve_init(data, use_tqdm=use_tqdm, logs=logs)
+            data = self.retrieval_init(data, use_tqdm=use_tqdm, logs=logs)
         iterations_processed = 0
         for i in range(start_iter, iterations):
             data, _, __ = self.info_check_iter(data, i, generation_config, enforce_grammar=enforce_grammar, add_onehop=(add_onehop and i == 0), ignore_ids=ignore_ids, use_tqdm=use_tqdm)
-            data, _, __ = self.infer_subquery_iter(data, i, generation_config, enforce_grammar=enforce_grammar, ignore_ids=ignore_ids, use_tqdm=use_tqdm)
-            data = self.retrieve_info_iter(data, i, use_tqdm=use_tqdm, logs=logs)
+            data, _, __ = self.subq_construct_iter(data, i, generation_config, enforce_grammar=enforce_grammar, ignore_ids=ignore_ids, use_tqdm=use_tqdm)
+            data = self.retrieval_iter(data, i, use_tqdm=use_tqdm, logs=logs)
             iterations_processed += 1
         if iterations_processed == iterations - start_iter:
             data, _, __ = self.info_check_iter(data, iterations, generation_config, enforce_grammar=enforce_grammar, use_tqdm=use_tqdm)

@@ -1,7 +1,6 @@
 import re
 import os
 import json
-from tqdm import tqdm
 import os
 from enum import Enum
 from string import Template
@@ -9,17 +8,11 @@ import string
 from collections import Counter
 
 class Task(Enum):
-    INFO_CHECK = "info_check"
-    SUBQUERY_CONSTRUCT = "subquery_construct"
-    SHORT_ANSWER = "short_answer"
-
-def cond_tqdm(iterable, use_tqdm=True, **kwargs):
-    if use_tqdm:
-        return tqdm(iterable, **kwargs)
-    else:
-        return iterable
+    INFO_CHECK = "INFO_CHECK"
+    SUBQUERY_CONSTRUCT = "SUBQUERY_CONSTRUCT"
+    SHORT_ANSWER = "SHORT_ANSWER"
     
-def extract_subqueries(text: str):
+def extract_arg_values(text: str, arguments):
     # Step 1: Find the <tool_call>...</tool_call> block
     match = re.search(r">\s*(\{.*?\})\s*<", text, re.DOTALL)
     if not match:
@@ -37,27 +30,20 @@ def extract_subqueries(text: str):
     if "arguments" not in data or not isinstance(data["arguments"], dict):
         return None, "Missing or invalid 'arguments' key in JSON"
 
-    # Step 4: Extract subqueries
-    subqueries = [
-        v for k, v in sorted(data["arguments"].items(), key=lambda x: int(x[0].replace("subquery", "")))
-        if k.startswith("subquery")
+    # Step 4: Extract values
+    extracted_values = [
+        v for k, v in data["arguments"].items() if k in arguments
     ]
 
-    if not subqueries:
-        return None, "No subqueries found"
+    if not extracted_values:
+        return None, "No values found"
 
-    return subqueries, None
+    return extracted_values, None
 
-def get_tools(base_path, tools_path, task):
-    with open(os.path.join(base_path, tools_path), 'r') as f:
-        tools = json.load(f)
-    if(task == Task.INFO_CHECK):
-        task_title = "INFO_CHECK"
-    elif(task == Task.SUBQUERY_CONSTRUCT):
-        task_title = "SUBQUERY_CONSTRUCT"
-    return tools[task_title]
+def get_tools(prompts_and_tools, task: Task):
+    return prompts_and_tools[task.value]["tools"]
 
-def get_prompts(base_path, prompts_path, task, query, context=None):
+def get_prompts(prompts_and_tools, task:Task, query, context=None, past_queries=None):
     def substitute(obj, values):
         if isinstance(obj, dict):
             return {k: substitute(v, values) for k, v in obj.items()}
@@ -68,7 +54,6 @@ def get_prompts(base_path, prompts_path, task, query, context=None):
         else:
             return obj
         
-    # context = list(set(context))
     context_modified = []
     for i, (title, contents) in enumerate(context, start=1):
         # join all content parts into one string
@@ -78,19 +63,12 @@ def get_prompts(base_path, prompts_path, task, query, context=None):
 
     context_str = "\n".join(context_modified)
     
-    with open(os.path.join(base_path, prompts_path), 'r') as f:
-        template = json.load(f)
-    if(task == Task.INFO_CHECK):
-        task_title = "INFO_CHECK"
-    elif(task == Task.SUBQUERY_CONSTRUCT):
-        task_title = "SUBQUERY_CONSTRUCT"
-    elif(task == Task.SHORT_ANSWER):
-        task_title = "SHORT_ANSWER"
+    task_title = task.value
     values = {
         "query": query,
         "context":  context_str,
     }
-    return substitute(template[task_title], values)
+    return substitute(prompts_and_tools[task_title]["prompt"], values)
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles, and extra whitespace."""
