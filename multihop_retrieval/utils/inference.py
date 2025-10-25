@@ -108,7 +108,6 @@ class Inferrer:
             
             llm_res = self._call_llm(generation_config, prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
             predicted_m = llm_res["completion_decoded"]
-            print("completion", predicted_m)
             # TODO deal with thought
             response_list.append(predicted_m)
 
@@ -228,7 +227,6 @@ class Inferrer:
                         d[f"multihop{iterations}"] = match.group(regex_group)
                     else:
                         d["error"] = "format"
-                    print("final answer",d[f"multihop{iterations}"])
                     break  # stop after first valid key
         return data
     
