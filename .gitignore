@@ -3,6 +3,7 @@ slurm_logs/
 results/
 logs/
 unsloth_compiled_cache/
+wandb/
 *.slurm
 *.ipynb
 

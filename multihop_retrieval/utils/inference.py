@@ -6,6 +6,7 @@ from multihop_retrieval.utils.outlines_transformers import CustomizedTransformer
 from .utils import Task
 from .retrieval import Retriever
 from outlines.types import Regex
+from collections.abc import Mapping
 
 class Inferrer:
     
@@ -20,12 +21,12 @@ class Inferrer:
         "subq_construct_iter": "subq"
     }
     
-    def __init__(self, retriever, model, tokenizer, prompts_and_tools):
-        self.input_preparation_func = None
+    def __init__(self, retriever, model, tokenizer, prompts_and_tools, device="cuda"):
         self.retriever = retriever
         self.model = model
         self.tokenizer = tokenizer
         self.prompts_and_tools = prompts_and_tools
+        self.device = device
     
     @classmethod    
     def create_with_retriever(cls, wiki_path, embedder, index, metadata, model, tokenizer, prompts_and_tools):
@@ -41,6 +42,7 @@ class Inferrer:
                 value = data[i][f"question"]
                 query_count += 1
             except KeyError:
+                error_count += 1
                 continue
             else:
                 context_add = self.retriever.retrieve_info_rag([value])
@@ -59,8 +61,7 @@ class Inferrer:
                 subqueries = data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"]
                 query_count += 1
             except KeyError:
-                # TODO warn
-                error_count += 1
+                # the sample is skipped since there's no previous iteration.
                 continue
             
             if(not subqueries):
@@ -88,6 +89,11 @@ class Inferrer:
         col_name = f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"
         for i in tqdm(range(0, len(data), 1), disable = not use_tqdm, desc=f"iter_{iteration}_0_gen"):
             selected = data[i]
+            
+            if iteration != 0 and f"{Inferrer.dict_labels["retrieval_iter"]}_{iteration - 1}" not in selected.keys():
+                # the sample is skipped since there's no previous iteration.
+                continue
+            
             query = selected["question"]
             context = selected["context"]
             context = self._get_deduplicated_context(context, iteration, selected)
@@ -99,8 +105,10 @@ class Inferrer:
             if enforce_grammar:
                 grammar = Regex(self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"])
             
+            
             llm_res = self._call_llm(generation_config, prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
             predicted_m = llm_res["completion_decoded"]
+            print("completion", predicted_m)
             # TODO deal with thought
             response_list.append(predicted_m)
 
@@ -146,10 +154,11 @@ class Inferrer:
             query = selected["question"]
             context = selected["context"]
             context = self._get_deduplicated_context(context, iteration, selected)
+            
             try:
                 prev_response = selected[f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"]
             except KeyError:
-                # TODO warning
+                # the sample is skipped since there's no previous iteration.
                 continue
 
             if(self._check_done(prev_response)):
@@ -164,21 +173,16 @@ class Inferrer:
             
             llm_res = self._call_llm(generation_config, prompt, grammar=grammar, tools=tools)
             llm_output = llm_res["completion_decoded"]
-            tool_call_use = subq_json["tool_call"]
-            if tool_call_use:
-                arguments = subq_json["response_params"]
-                subqueries, error_desc = utils.extract_arg_values(llm_output, arguments)
+            pattern = subq_json["pattern"]
+            regex_groups = subq_json["regex_groups"]
+            match = re.search(pattern, llm_output)
+            subqueries = []
+            if match:
+                for g in regex_groups:
+                    if match.group(g):
+                        subqueries.append(match.group(g))
             else:
-                pattern = subq_json["pattern"]
-                regex_groups = subq_json["regex_groups"]
-                match = re.search(pattern, llm_output)
-                subqueries = []
-                if match:
-                    for g in regex_groups:
-                        if match.group(g):
-                            subqueries.append(match.group(g))
-                else:
-                    raise ValueError("the query output is malformed.")
+                raise ValueError(f"the query output is malformed: {llm_output}.")
             try:
                 data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"] = subqueries
                 if not ignore_ids:
@@ -193,7 +197,7 @@ class Inferrer:
         positive_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["positive_tag"]
         negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
         info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
-        tool_call_use =  self.prompts_and_tools[Task.INFO_CHECK.value]["tool_call"]
+        regex_group = self.prompts_and_tools[Task.INFO_CHECK.value]["regex_group"]
 
         for d in data:
             d[f"multihop{iterations}"] = ""
@@ -211,32 +215,20 @@ class Inferrer:
                         break
 
                     if negative_tag in content:
-                        d["error"] = "info"
+                        if i == iterations:
+                            d["error"] = "info"
+                        else:
+                            d["error"] = "unknown"
                         break
-                    if tool_call_use:
-                        match = re.search(info_pattern, content)
-                        if not match:
-                            d["error"] = "format"
-                        else:
-                            try:
-                                tool_call_desc = json.loads(match.group(1))
-                                name = tool_call_desc.get("name", "")
-                                args = tool_call_desc.get("arguments", {})
-
-                                if name == positive_tag:
-                                    d[f"multihop{iterations}"] = args.get("answer", "")
-                                else:
-                                    d["error"] = "format"
-                            except Exception:
-                                d["error"] = "format"
+                    
+                    match = re.search(info_pattern, content)
+                    if not match:
+                        d["error"] = "format"
+                    elif match.group(regex_group):
+                        d[f"multihop{iterations}"] = match.group(regex_group)
                     else:
-                        match = re.search(info_pattern, content)
-                        if not match:
-                            d["error"] = "format"
-                        elif match.group(1):
-                            d[f"multihop{iterations}"] = match.group(1)
-                        else:
-                            d["error"] = "format"
+                        d["error"] = "format"
+                    print("final answer",d[f"multihop{iterations}"])
                     break  # stop after first valid key
         return data
     
@@ -274,13 +266,12 @@ class Inferrer:
             padding=True,
             padding_side="left",
             # add_special_tokens=False,
-        ).to("cuda")  
+        ).to(self.device)  
         
-        if self.input_preparation_func:
-            inputs = self.input_preparation_func(inputs)
-            prompt_ids, prompt_mask = inputs["input_ids"], inputs["attention_mask"]
-            inputs = {}
-            inputs["input_ids"], inputs["attention_mask"] = prompt_ids, prompt_mask
+        inputs = self._prepare_inputs(inputs)
+        prompt_ids, prompt_mask = inputs["input_ids"], inputs["attention_mask"]
+        inputs = {}
+        inputs["input_ids"], inputs["attention_mask"] = prompt_ids, prompt_mask
         
         if grammar:
             outlines_transformers = CustomizedTransformers(self.model, self.tokenizer)
@@ -343,11 +334,38 @@ class Inferrer:
             "completion_decoded": completion,
         }
     
+    # Transplanted from transformers Trainer._prepare_input    
+    def _prepare_input(self, data):
+        """
+        Prepares one `data` before feeding it to the model, be it a tensor or a nested list/dictionary of tensors.
+        """
+        if isinstance(data, Mapping):
+            return type(data)({k: self._prepare_input(v) for k, v in data.items()})
+        elif isinstance(data, (tuple, list)):
+            return type(data)(self._prepare_input(v) for v in data)
+        elif isinstance(data, torch.Tensor):
+            kwargs = {"device": self.device}
+            return data.to(**kwargs)
+        return data
+    
+    # Transplanted from transformers Trainer._prepare_inputs 
+    def _prepare_inputs(self, inputs):
+        """
+        Prepare `inputs` before feeding them to the model, converting them to tensors if they are not already and
+        handling potential state.
+        """
+        inputs = self._prepare_input(inputs)
+        if len(inputs) == 0:
+            raise ValueError(
+                "The batch received was empty, your model won't be able to train on it. Double-check that your "
+                f"training dataset contains keys expected by the model: {','.join(self._signature_columns)}."
+            )
+        return inputs
+    
     #################################### main ####################################
     
     #TODO put some of the parameters inside config
-    def infer(self, data, generation_config, enforce_grammar=True, iterations=3, start_iter=0, use_tqdm=False, logs=False, add_onehop=False, calculate_time=False, ignore_ids=False, input_preparation_func=None):
-        self.input_preparation_func = input_preparation_func
+    def infer(self, data, generation_config, enforce_grammar=True, iterations=3, start_iter=0, use_tqdm=False, logs=False, add_onehop=False, calculate_time=False, ignore_ids=False):
         timer_start = time.time()
         if start_iter == 0:
             data = self.retrieval_init(data, use_tqdm=use_tqdm, logs=logs)

@@ -3,7 +3,7 @@
         "prompt": [
             {
                 "role": "system",
-                "content": "You are a helpful assistant.\nConsider if the provided context is enough to respond to the user query:\nContext:\n$context\n\nIf the information is enough, start your response with information_is_sufficient and then add a short final answer after a colon. Keep your answer to one expression or word. If the information is not enough, simply output information_not_sufficient."
+                "content": "You are a helpful assistant.\nConsider if the provided context is enough to respond to the user query:\nContext:\n$context\n\nIf the information is enough, start your response with information_is_sufficient then add a short final answer. Keep your answer to one expression or word. If the information is not enough, simply output information_not_sufficient."
             },
             {
                 "role": "user",
@@ -12,9 +12,10 @@
         ],
         "tools": null,
         "tool_call": false,
-        "pattern": "^(information_is_sufficient:\\s*(.+)|information_not_sufficient)$",
+        "pattern": "(information_is_sufficient\\(\"short_final_answer\":\\s*\"(.{2,20})\"\\)|information_not_sufficient)",
         "positive_tag": "information_is_sufficient",
-        "negative_tag": "information_not_sufficient"
+        "negative_tag": "information_not_sufficient",
+        "regex_group": 2
     },
     "SUBQUERY_CONSTRUCT": {
         "prompt": [
@@ -29,7 +30,7 @@
         ],
         "tools": null,
         "tool_call": false,
-        "pattern": "^1\\.\\s(.+)\r?\n2\\.\\s(.+)(\r?\n3\\.\\s(.+))?(\r?\n4\\.\\s(.+))?$",
+        "pattern": "1\\.\\s(.+)\r?\n2\\.\\s(.+)(\r?\n3\\.\\s(.+))?(\r?\n4\\.\\s(.+))?\n",
         "regex_groups": [
             1,
             2,
@@ -50,6 +51,6 @@
         ],
         "tools": null,
         "tool_call": false,
-        "pattern": "^.*$"
+        "pattern": ".*"
     }
 }

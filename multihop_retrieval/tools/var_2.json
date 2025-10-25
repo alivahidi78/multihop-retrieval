@@ -1,4 +1,4 @@
-{   "_comment": "non-functional",
+{
     "INFO_CHECK": {
         "prompt": [
             {
@@ -43,61 +43,32 @@
                 }
             }
         ],
-        "tool_call": true,
         "response_params": ["answer"],
-        "pattern": "<tool_call>\n(\\{.*\\})\n</tool_call>",
+        "pattern": "<tool_call>\n(\\{\"name\": \"(information_is_sufficient|information_not_sufficient)\", \"arguments\": \\{(|\"answer\": \"(.*)\")\\}\\})\n<\/tool_call>",
         "positive_tag": "information_is_sufficient",
         "negative_tag": "information_not_sufficient",
-        "regex_group": 1
+        "regex_group": 4
     },
     "SUBQUERY_CONSTRUCT": {
         "prompt": [
             {
                 "role": "system",
-                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink step by step about what pieces of information are missing.\nCome up with multiple SIMPLE questions and use retrieve_info with the new query(s).\nBE SURE TO INCLUDE at least one retrieve_info request in your response.\nDO NOT JUST REPEAT THE USER QUERY.\nAsk simpler questions instead.\nContext:\n$context\n"
+                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink about what pieces of information are missing and come up with multiple search queries (similar to google search) whose answer aids in finding the missing pieces of information. List these queries in your response.\nDO NOT REPEAT THE USER QUERY.Ask simpler questions instead.\nContext:\n$context\n"
             },
             {
                 "role": "user",
                 "content": "$query"
             }
         ],
-        "tools": [
-            {
-                "type": "function",
-                "function": {
-                    "name": "retrieve_info",
-                    "description": "Retrieve info relevant to a query.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "subquery1": {
-                                "type": "string",
-                                "description": "A simplified subquery whose answer could help in responding to the user"
-                            },
-                            "subquery2": {
-                                "type": "string",
-                                "description": "Another simplified subquery independent of the first"
-                            },
-                            "subquery3": {
-                                "type": "string",
-                                "description": "Another simplified subquery if needed"
-                            },
-                            "subquery4": {
-                                "type": "string",
-                                "description": "Another simplified subquery if needed"
-                            }
-                        },
-                        "required": [
-                            "subquery1",
-                            "subquery2"
-                        ]
-                    }
-                }
-            }
-        ],
-        "tool_call": true,
-        "response_params": ["subquery1", "subquery2", "subquery3", "subquery4"],
-        "pattern": "<tool_call>\n(\\{.*\\})\n</tool_call>"
+        "tools": null,
+        "tool_call": false,
+        "pattern": "1\\.\\s(.+)\r?\n2\\.\\s(.+)(\r?\n3\\.\\s(.+))?(\r?\n4\\.\\s(.+))?\n",
+        "regex_groups": [
+            1,
+            2,
+            4,
+            6
+        ]
     },
     "SHORT_ANSWER": {
         "prompt": [
