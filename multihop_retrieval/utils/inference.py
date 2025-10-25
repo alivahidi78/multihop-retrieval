@@ -212,23 +212,30 @@ class Inferrer:
             d[f"multihop{iterations}"] = ""
             d["error"] = ""
 
-            # check from iteration_3 down to iteration_0
+            if f"{ic_label}_{0}" not in d:
+                d["error"] = "llm_start"
+                continue
+            # check from iteration_max down to iteration_0
             for i in range(iterations, -1, -1):
                 key = f"{ic_label}_{i}"
                 query_key= f"{sc_label}_{i}"
+                ret_key= f"{rv_label}_{i}"
                 if key in d and isinstance(d[key], str):
                     d["last_iter"] = i
                     content = d[key]
-
+                    
+                    if ret_key in d:
+                        d["error"] = "generation"
+                        
                     if query_key in d:
-                        d["error"] = "query"
+                        d["error"] = "retrieval"
                         break
 
                     if negative_tag in content:
                         if i == iterations:
                             d["error"] = "info"
                         else:
-                            d["error"] = "unknown"
+                            d["error"] = "subquery"
                         break
                     
                     match = re.search(info_pattern, content)
