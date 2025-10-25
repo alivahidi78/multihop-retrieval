@@ -16,11 +16,12 @@ from contextlib import nullcontext
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None):
+    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None):
         self.iterations = iterations
         self.retriever = retriever
         self.unbundled_batching = unbundled_batching
         self.prompts_and_tools = prompts_and_tools
+        self.enforce_grammar = enforce_grammar
         
         if reward_funcs == None:
             reward_funcs = MultihopGRPOTrainer.get_default_reward_functions(self.prompts_and_tools)
@@ -168,16 +169,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
             torch.no_grad(),
             FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
         ):  
-            # A bit of a hackjob to insert _prepare_inputs from transformers trainer into inferrer
-            input_preparation_func = None
-            for cls in type(self).__mro__:
-                if cls.__name__ == "Trainer":
-                    input_preparation_func = getattr(cls, "_prepare_inputs").__get__(self, cls)
-                    break
-            if not input_preparation_func:
-                raise ReferenceError("Cannot find Trainer._prepare_inputs")
             inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools)
-            data = inferrer.infer(data, self.generation_config, iterations = self.iterations, input_preparation_func=input_preparation_func)
+            data = inferrer.infer(data, self.generation_config, iterations = self.iterations, enforce_grammar=self.enforce_grammar)
         
         final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]
@@ -339,6 +332,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
             "advantages": advantages,
             "num_items_in_batch": num_items_in_batch,
         }
+        
         if old_per_token_logps is not None:
             output["old_per_token_logps"] = old_per_token_logps
         if ref_per_token_logps is not None:

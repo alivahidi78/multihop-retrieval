@@ -181,7 +181,9 @@ class Inferrer:
                     if match.group(g):
                         subqueries.append(match.group(g))
             else:
-                raise ValueError(f"the query output is malformed: {llm_output}.")
+                #TODO warning
+                print(f"the following query output is malformed:\n{llm_output}.")
+                continue
             try:
                 data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"] = subqueries
                 if not ignore_ids:
@@ -197,16 +199,25 @@ class Inferrer:
         negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
         info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
         regex_group = self.prompts_and_tools[Task.INFO_CHECK.value]["regex_group"]
+        
+        ic_label = Inferrer.dict_labels["info_check_iter"]
+        sc_label = Inferrer.dict_labels["subq_construct_iter"]
+        rv_label = Inferrer.dict_labels["retrieval_iter"]
 
         for d in data:
+            d["ic_calls"] = sum(1 for key in d if key.startswith(ic_label))
+            d["sc_calls"] = sum(1 for key in d if key.startswith(sc_label))
+            d["rv_calls"] = sum(1 for key in d if key.startswith(rv_label)) + 1
+            d["llm_calls"] = d["ic_calls"] + d["sc_calls"]
             d[f"multihop{iterations}"] = ""
             d["error"] = ""
 
             # check from iteration_3 down to iteration_0
             for i in range(iterations, -1, -1):
-                key = f"{Inferrer.dict_labels["info_check_iter"]}_{i}"
-                query_key= f"{Inferrer.dict_labels["subq_construct_iter"]}_{i}"
+                key = f"{ic_label}_{i}"
+                query_key= f"{sc_label}_{i}"
                 if key in d and isinstance(d[key], str):
+                    d["last_iter"] = i
                     content = d[key]
 
                     if query_key in d:
