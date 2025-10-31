@@ -140,11 +140,11 @@
                 }
             }
         ],
-        "pattern": "<tool_call>\n(\\{\"name\": \"(provide_response)\", \"arguments\": \\{(\"answer\": \"(.*)\"), \"info_enough\": \"(True|False)\"\\}\\})\n<\/tool_call>",
+        "pattern": "<tool_call>\n(\\{\"name\": \"(provide_response)\", \"arguments\": \\{(\"answer\": \"(.*)\"), \"info_enough\": (true|false)\\}\\})\n<\/tool_call>",
         "answer_group": 4,
         "tag_group": 5,
-        "positive_tag": "True",
-        "negative_tag": "False"
+        "positive_tag": "true",
+        "negative_tag": "false"
     },
     "VERIFY_OR_DENY": {
         "prompt": [

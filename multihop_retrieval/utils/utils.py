@@ -123,4 +123,5 @@ def remove_intermediate_steps(data):
     data = remove_tensors(data)
     for i, d in enumerate(data):
         data[i] = {k: v for k, v in d.items() if k not in keys_to_remove}
+    return data
     

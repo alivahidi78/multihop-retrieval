@@ -32,12 +32,12 @@ class InferrerConfig:
             
 class Inferrer:
     dict_labels = {
-        Task.RETRIEVE: "ret",
-        Task.INFO_CHECK: "inf",
-        Task.PROVIDE_ANSWER: "pro", # variation of info_check
-        Task.VERIFY_OR_DENY: "vod", 
-        Task.SUBQUERY_CONSTRUCT: "que",
-        Task.SUBQUERY_CONSTRUCT_WITH_HISTORY: "quh" # variation of subq_construct
+        Task.RETRIEVE: "step_ret",
+        Task.INFO_CHECK: "step_inf",
+        Task.PROVIDE_ANSWER: "step_pro", # variation of info_check
+        Task.VERIFY_OR_DENY: "step_vod", 
+        Task.SUBQUERY_CONSTRUCT: "step_que",
+        Task.SUBQUERY_CONSTRUCT_WITH_HISTORY: "step_quh" # variation of subq_construct
     }
     
     def __init__(self, retriever, model, tokenizer, prompts_and_tools, inferrer_config=None):
@@ -120,7 +120,6 @@ class Inferrer:
             grammar = None
             if self.config.enforce_grammar:
                 grammar = Regex(self.prompts_and_tools[task_id.value]["pattern"])
-            
             
             llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
             predicted_m = llm_res["completion_decoded"]
@@ -317,7 +316,7 @@ class Inferrer:
             padding=True,
             padding_side="left",
             # add_special_tokens=False,
-        ).to(self.device)  
+        ).to(self.config.device)  
         
         inputs = self._prepare_inputs(inputs)
         prompt_ids, prompt_mask = inputs["input_ids"], inputs["attention_mask"]
@@ -393,7 +392,7 @@ class Inferrer:
         elif isinstance(data, (tuple, list)):
             return type(data)(self._prepare_input(v) for v in data)
         elif isinstance(data, torch.Tensor):
-            kwargs = {"device": self.device}
+            kwargs = {"device": self.config.device}
             return data.to(**kwargs)
         return data
     
