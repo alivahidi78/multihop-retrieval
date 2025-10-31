@@ -79,7 +79,7 @@ if __name__ == "__main__":
     inferrer = Inferrer.create_with_retriever(WIKI_PATH, embedder, cpu_index, metadata, model, tokenizer, prompts_and_tools)
     
     data = all_data[:limit]
-    data = inferrer.infer(data, iterations=3, use_tqdm=True, logs=True)
+    data = inferrer.infer_basic(data, iterations=3, use_tqdm=True, logs=True)
     with open(os.path.join(OUTPUT_PATH, f"./dev_iter_{iterations}_processed_5.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
         

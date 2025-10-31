@@ -171,7 +171,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         ):  
             inferrer_config = InferrerConfig(generation_config = self.generation_config, iterations = self.iterations, enforce_grammar = self.enforce_grammar)
             inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools, inferrer_config = inferrer_config)
-            data = inferrer.infer(data)
+            data = inferrer.infer_basic(data)
         
         final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]

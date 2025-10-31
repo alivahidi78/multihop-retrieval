@@ -46,7 +46,8 @@
         "pattern": "<tool_call>\n(\\{\"name\": \"(information_is_sufficient|information_not_sufficient)\", \"arguments\": \\{(|\"answer\": \"(.*)\")\\}\\})\n<\/tool_call>",
         "positive_tag": "information_is_sufficient",
         "negative_tag": "information_not_sufficient",
-        "regex_group": 4
+        "answer_group": 4,
+        "tag_group": 2
     },
     "SUBQUERY_CONSTRUCT": {
         "prompt": [
@@ -82,7 +83,27 @@
         "tools": null,
         "pattern": ".*"
     },
-    "SHORT_ANSWER_FUNCTIONAL": {
+    "SUBQUERY_CONSTRUCT_WITH_HISTORY": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink about what pieces of information are missing and come up with multiple search queries (similar to google search) whose answer aids in finding the missing pieces of information. List these queries in your response.\nDO NOT REPEAT THE USER QUERY.Ask simpler questions instead.\nThis is the intitial context:\n<context>\n$context\n<\/context>\nThese are the questions you have previously asked:\n<list>\n$past_queries\n<\/list>\nThese are the information retrieved based on those queries:\n<context>\n$additional_context\n<\/context>"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": null,
+        "pattern": "1\\.\\s(.+)\r?\n2\\.\\s(.+)(\r?\n3\\.\\s(.+))?(\r?\n4\\.\\s(.+))?\n",
+        "regex_groups": [
+            1,
+            2,
+            4,
+            6
+        ]
+    },
+    "PROVIDE_ANSWER": {
         "prompt": [
             {
                 "role": "system",
@@ -120,10 +141,10 @@
             }
         ],
         "pattern": "<tool_call>\n(\\{\"name\": \"(provide_response)\", \"arguments\": \\{(\"answer\": \"(.*)\"), \"info_enough\": \"(True|False)\"\\}\\})\n<\/tool_call>",
-        "regex_groups": [
-            4,
-            5
-        ]
+        "answer_group": 4,
+        "tag_group": 5,
+        "positive_tag": "True",
+        "negative_tag": "False"
     },
     "VERIFY_OR_DENY": {
         "prompt": [

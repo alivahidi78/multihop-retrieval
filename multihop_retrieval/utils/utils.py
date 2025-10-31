@@ -8,6 +8,24 @@ from string import Template
 import string
 from collections import Counter
 
+class Task(Enum):
+    RETRIEVE_INIT = "RETRIEVE_INIT"
+    RETRIEVE = "RETRIEVE"
+    INFO_CHECK = "INFO_CHECK"
+    SHORT_ANSWER = "SHORT_ANSWER"
+    PROVIDE_ANSWER = "PROVIDE_ANSWER"
+    VERIFY_OR_DENY = "VERIFY_OR_DENY"
+    SUBQUERY_CONSTRUCT = "SUBQUERY_CONSTRUCT"
+    SUBQUERY_CONSTRUCT_WITH_HISTORY = "SUBQUERY_CONSTRUCT_WITH_HISTORY"
+
+def method_task_id(task_id:Task):
+    def decorator(func):
+        # func.task_id = task_id
+        def wrapper(self, *args, **kwargs):
+            return func(self, *args, task_id=task_id, **kwargs)
+        return wrapper
+    return decorator
+
 def unbundle(data):
     flat = [item for sublist in data for item in sublist]
     counts = [len(sublist) for sublist in data]
@@ -20,11 +38,6 @@ def rebundle(flat, counts):
         reconstructed.append(flat[idx: idx + count])
         idx += count
     return reconstructed
-
-class Task(Enum):
-    INFO_CHECK = "INFO_CHECK"
-    SUBQUERY_CONSTRUCT = "SUBQUERY_CONSTRUCT"
-    SHORT_ANSWER = "SHORT_ANSWER"
     
 def get_tools(prompts_and_tools, task: Task):
     return prompts_and_tools[task.value]["tools"]

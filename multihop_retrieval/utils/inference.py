@@ -3,7 +3,7 @@ from tqdm import tqdm
 from transformers.generation.configuration_utils import GenerationConfig
 from multihop_retrieval.utils import utils
 from multihop_retrieval.utils.outlines_transformers import CustomizedTransformers
-from .utils import Task
+from .utils import Task, method_task_id
 from .retrieval import Retriever
 from outlines.types import Regex
 from collections.abc import Mapping
@@ -32,13 +32,12 @@ class InferrerConfig:
             
 class Inferrer:
     dict_labels = {
-        "retrieval_iter": "nothink_retrieve_iteration",
-        "info_check_iter": "nothink_gen_iteration",
-        "subq_construct_iter": "nothink_query_iteration"
-    }
-    task_labels = {
-        "info_check_iter": "info",
-        "subq_construct_iter": "subq"
+        Task.RETRIEVE: "ret",
+        Task.INFO_CHECK: "inf",
+        Task.PROVIDE_ANSWER: "pro", # variation of info_check
+        Task.VERIFY_OR_DENY: "vod", 
+        Task.SUBQUERY_CONSTRUCT: "que",
+        Task.SUBQUERY_CONSTRUCT_WITH_HISTORY: "quh" # variation of subq_construct
     }
     
     def __init__(self, retriever, model, tokenizer, prompts_and_tools, inferrer_config=None):
@@ -53,8 +52,9 @@ class Inferrer:
         return cls(Retriever(wiki_path, embedder, index, metadata), model, tokenizer, prompts_and_tools, inferrer_config) 
       
     #################################### retrieval ####################################  
-      
-    def retrieval_init(self, data):
+    
+    @method_task_id(Task.RETRIEVE_INIT)
+    def retrieval_init(self, data, task_id=None):
         query_count= 0
         error_count= 0
         for i in tqdm(range(len(data)), disable=not self.config.use_tqdm, desc=f"init_ret"):
@@ -68,17 +68,18 @@ class Inferrer:
                 context_add = self.retriever.retrieve_info_rag([value])
                 flat_context_add = [item for sublist in context_add for item in sublist]
                 result = [[d["title"], d["full_text"]] for d in flat_context_add]
-                data[i][f"context"] = result
+                data[i]["context"] = result
         if self.config.logs:
             print(f"init total queries: {query_count}\nerrors: {error_count}")
         return data
     
-    def retrieval_iter(self, data, iteration):
+    @method_task_id(Task.RETRIEVE) 
+    def retrieval_iter(self, data, iteration, prev_task_id, task_id=None):
         query_count= 0
         error_count= 0
         for i in tqdm(range(len(data)), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_2_ret"):
             try:
-                subqueries = data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"]
+                subqueries = data[i][f"{Inferrer.dict_labels[prev_task_id]}_{iteration}"]
                 query_count += 1
             except KeyError:
                 # the sample is skipped since there's no previous iteration.
@@ -90,34 +91,35 @@ class Inferrer:
                 context_add = self.retriever.retrieve_info_rag(subqueries)
                 flat_context_add = [item for sublist in context_add for item in sublist]
                 result = [[d["title"], d["full_text"]] for d in flat_context_add]
-                data[i][f"{Inferrer.dict_labels["retrieval_iter"]}_{iteration}"] = result
+                data[i][f"{Inferrer.dict_labels[task_id]}_{iteration}"] = result
         if self.config.logs:
             print(f"{iteration} total queries: {query_count}\nerrors: {error_count}")
         return data
     
     #################################### info_check #################################### 
-        
-    def info_check_iter(self, data, iteration):
+    
+    @method_task_id(Task.INFO_CHECK)    
+    def info_check_iter(self, data, iteration, prev_task_id, task_id=None):
         prompt_list = []
         response_list = []
-        col_name = f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"
+        col_name = f"{Inferrer.dict_labels[task_id]}_{iteration}"
         for i in tqdm(range(0, len(data), 1), disable = not self.config.use_tqdm, desc=f"iter_{iteration}_0_gen"):
             selected = data[i]
             
-            if iteration != 0 and f"{Inferrer.dict_labels["retrieval_iter"]}_{iteration - 1}" not in selected.keys():
+            if iteration != 0 and f"{Inferrer.dict_labels[prev_task_id]}_{iteration - 1}" not in selected.keys():
                 # the sample is skipped since there's no previous iteration.
                 continue
             
             query = selected["question"]
             context = selected["context"]
             context = self._get_deduplicated_context(context, iteration, selected)
-            tools = utils.get_tools(self.prompts_and_tools, Task.INFO_CHECK)
-            prompt = utils.get_prompts(self.prompts_and_tools, Task.INFO_CHECK, query=query, context=context)
+            tools = utils.get_tools(self.prompts_and_tools, task_id)
+            prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context)
             prompt_list.append(prompt)
 
             grammar = None
             if self.config.enforce_grammar:
-                grammar = Regex(self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"])
+                grammar = Regex(self.prompts_and_tools[task_id.value]["pattern"])
             
             
             llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
@@ -130,13 +132,14 @@ class Inferrer:
                 predicted_o = self._one_hop(query, context)
             try:
                 data[i][col_name] = predicted_m
-                data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.task_labels["info_check_iter"])
+                data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.dict_labels[task_id])
                 if self.config.add_onehop and iteration==0:
                     data[i]["onehop"] = predicted_o
             except Exception as e:
                 print(f"exception at {i}")
         return data
     
+    ### short_answer ###
     def _one_hop(self, query, context, thinking=False):
         prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context)
         llm_res = self._call_llm(prompt, enable_thinking=thinking, skip_special_tokens=True)
@@ -156,33 +159,56 @@ class Inferrer:
             })          
         return data    
     
-    def _check_done(self, response):
-        positive_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["positive_tag"]
-        negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
-        return positive_tag in response
+    def _check_done(self, response, task_id):
+        positive_tag = self.prompts_and_tools[task_id.value]["positive_tag"]
+        negative_tag = self.prompts_and_tools[task_id.value]["negative_tag"]
+        tag_group = self.prompts_and_tools[task_id.value]["tag_group"]
+        pattern = self.prompts_and_tools[task_id.value]["pattern"]
+        match = re.search(pattern, response) 
+        if match:
+            group_text = match.group(tag_group)
+            if group_text is None:
+                pass
+            elif positive_tag in match.group(tag_group):
+                return True
+            elif negative_tag in match.group(tag_group):
+                return False
+        print(f"Response malformed: {response}")
+        return False
+    
+    #################################### provide_answer ####################################
+    @method_task_id(Task.PROVIDE_ANSWER)
+    def provide_answer_iter(self, data, iteration, prev_task_id, task_id=None):
+        pass
+    
+    #################################### verify_or_deny ####################################
+    @method_task_id(Task.VERIFY_OR_DENY)
+    def verify_or_deny_iter(self, data, iteration, prev_task_id, task_id=None):
+        pass
     
     #################################### subq_construct ####################################
     
-    def subq_construct_iter(self, data, iteration):
+    @method_task_id(Task.SUBQUERY_CONSTRUCT)
+    def subq_construct_iter(self, data, iteration, prev_task_id, task_id=None):
         prompt_list = []
         response_list = []
         for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_1_2q"):
-            subq_json = self.prompts_and_tools[Task.SUBQUERY_CONSTRUCT.value]
+            subq_json = self.prompts_and_tools[task_id.value]
             selected = data[i]
             query = selected["question"]
             context = selected["context"]
             context = self._get_deduplicated_context(context, iteration, selected)
             
             try:
-                prev_response = selected[f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"]
+                prev_response = selected[f"{Inferrer.dict_labels[prev_task_id]}_{iteration}"]
             except KeyError:
                 # the sample is skipped since there's no previous iteration.
                 continue
 
-            if(self._check_done(prev_response)):
+            if(self._check_done(prev_response, prev_task_id)):
                 continue
-            tools = utils.get_tools(self.prompts_and_tools, Task.SUBQUERY_CONSTRUCT)
-            prompt = utils.get_prompts(self.prompts_and_tools, Task.SUBQUERY_CONSTRUCT, query=query, context=context)
+            tools = utils.get_tools(self.prompts_and_tools, task_id)
+            prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context)
             prompt_list.append(prompt)
             
             grammar = None
@@ -204,23 +230,29 @@ class Inferrer:
                 print(f"The following query attempt is malformed:\n{llm_output}.")
                 continue
             try:
-                data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"] = subqueries
-                data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.task_labels["subq_construct_iter"])
+                data[i][f"{Inferrer.dict_labels[task_id]}_{iteration}"] = subqueries
+                data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.dict_labels[task_id])
             except Exception as e:
                 print(f"exception at {i}")
         return data
     
+    #################################### subq_construct_history ####################################
+    
+    @method_task_id(Task.SUBQUERY_CONSTRUCT_WITH_HISTORY)
+    def subq_construct_history_iter(self, data, iteration, prev_task_id, task_id=None):
+        pass
+    
     #################################### finalize ####################################
         
-    def finalize_data(self, data, iterations = 3):
+    def finalize_data_basic(self, data, iterations = 3):
         positive_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["positive_tag"]
         negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
         info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
-        regex_group = self.prompts_and_tools[Task.INFO_CHECK.value]["regex_group"]
+        answer_group = self.prompts_and_tools[Task.INFO_CHECK.value]["answer_group"]
         
-        ic_label = Inferrer.dict_labels["info_check_iter"]
-        sc_label = Inferrer.dict_labels["subq_construct_iter"]
-        rv_label = Inferrer.dict_labels["retrieval_iter"]
+        ic_label = Inferrer.dict_labels[Task.INFO_CHECK]
+        sc_label = Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]
+        rv_label = Inferrer.dict_labels[Task.RETRIEVE]
 
         for d in data:
             d["ic_calls"] = sum(1 for key in d if key.startswith(ic_label))
@@ -259,8 +291,8 @@ class Inferrer:
                     match = re.search(info_pattern, content)
                     if not match:
                         d["error"] = "format"
-                    elif match.group(regex_group):
-                        d[f"multihop{iterations}"] = match.group(regex_group)
+                    elif match.group(answer_group):
+                        d[f"multihop{iterations}"] = match.group(answer_group)
                     else:
                         d["error"] = "format"
                     break  # stop after first valid key
@@ -341,7 +373,7 @@ class Inferrer:
         if not (iteration == 0):
             try:
                 for k in range(0, iteration):
-                    context.extend(selected_datum[f"{Inferrer.dict_labels["retrieval_iter"]}_{k}"])
+                    context.extend(selected_datum[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
             except KeyError:
                 # TODO warning
                 pass
@@ -381,18 +413,18 @@ class Inferrer:
     
     #################################### main ####################################
     
-    def infer(self, data, start_iter=0):
+    def infer_basic(self, data, start_iter=0):
         timer_start = time.time()
         if start_iter == 0:
             data = self.retrieval_init(data)
         iterations_processed = 0
         for i in range(start_iter, self.config.iterations):
-            data = self.info_check_iter(data, i)
-            data = self.subq_construct_iter(data, i)
-            data = self.retrieval_iter(data, i)
+            data = self.info_check_iter(data, i, prev_task_id=Task.RETRIEVE)
+            data = self.subq_construct_iter(data, i, prev_task_id=Task.INFO_CHECK)
+            data = self.retrieval_iter(data, i, prev_task_id=Task.SUBQUERY_CONSTRUCT)
             iterations_processed += 1
-        data = self.info_check_iter(data, self.config.iterations)
-        data = self.finalize_data(data, self.config.iterations)
+        data = self.info_check_iter(data, self.config.iterations, prev_task_id=Task.RETRIEVE)
+        data = self.finalize_data_basic(data, self.config.iterations)
         if self.config.remove_intermediate_steps:
             data = utils.remove_intermediate_steps(data)
         timer_end = time.time()
