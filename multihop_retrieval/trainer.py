@@ -1,4 +1,4 @@
-from multihop_retrieval.utils.inference import Inferrer
+from multihop_retrieval.utils.inference import Inferrer, InferrerConfig
 from multihop_retrieval.utils import utils
 
 from trl import GRPOTrainer
@@ -169,8 +169,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
             torch.no_grad(),
             FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
         ):  
-            inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools)
-            data = inferrer.infer(data, self.generation_config, iterations = self.iterations, enforce_grammar=self.enforce_grammar)
+            inferrer_config = InferrerConfig(generation_config = self.generation_config, iterations = self.iterations, enforce_grammar = self.enforce_grammar)
+            inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools, inferrer_config = inferrer_config)
+            data = inferrer.infer(data)
         
         final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]

@@ -55,9 +55,9 @@ class Retriever:
                         info["sentence"] = sentence
                         return info
         except Exception as e:
-            # TODO improve this part
-            print(f"Error reading: {e}")
-            return f"Error reading: {e}"
-        return "Line not found"
+            print(f"Error reading: {file_path}")
+            return ""
+        print(f"Line not found: {line_number} of {file_path}")
+        return ""
     
     

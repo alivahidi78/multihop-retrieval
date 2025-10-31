@@ -8,36 +8,56 @@ from .retrieval import Retriever
 from outlines.types import Regex
 from collections.abc import Mapping
 
+class InferrerConfig:
+    def __init__(self, **kwargs): 
+        defaults = {
+            "generation_config": GenerationConfig(
+                    max_new_tokens=128,
+                    do_sample=False,
+                    top_k=None,
+                    top_p=None,
+                    temperature=None,),
+            "enforce_grammar": True,
+            "iterations": 3,
+            "use_tqdm": False,
+            "logs": False,
+            "add_onehop": False,
+            "calculate_time": False,
+            "remove_intermediate_steps": False,
+            "device": "cuda"
+        }
+        defaults.update(kwargs)
+        for key, value in defaults.items():
+            setattr(self, key, value)
+            
 class Inferrer:
-    
     dict_labels = {
         "retrieval_iter": "nothink_retrieve_iteration",
         "info_check_iter": "nothink_gen_iteration",
         "subq_construct_iter": "nothink_query_iteration"
     }
-    
     task_labels = {
         "info_check_iter": "info",
         "subq_construct_iter": "subq"
     }
     
-    def __init__(self, retriever, model, tokenizer, prompts_and_tools, device="cuda"):
+    def __init__(self, retriever, model, tokenizer, prompts_and_tools, inferrer_config=None):
         self.retriever = retriever
         self.model = model
         self.tokenizer = tokenizer
         self.prompts_and_tools = prompts_and_tools
-        self.device = device
+        self.config = inferrer_config if inferrer_config else InferrerConfig()
     
     @classmethod    
-    def create_with_retriever(cls, wiki_path, embedder, index, metadata, model, tokenizer, prompts_and_tools):
-        return cls(Retriever(wiki_path, embedder, index, metadata), model, tokenizer, prompts_and_tools) 
+    def create_with_retriever(cls, wiki_path, embedder, index, metadata, model, tokenizer, prompts_and_tools, inferrer_config=None):
+        return cls(Retriever(wiki_path, embedder, index, metadata), model, tokenizer, prompts_and_tools, inferrer_config) 
       
     #################################### retrieval ####################################  
       
-    def retrieval_init(self, data, use_tqdm=True, logs=True):
+    def retrieval_init(self, data):
         query_count= 0
         error_count= 0
-        for i in tqdm(range(len(data)), disable=not use_tqdm, desc=f"init_ret"):
+        for i in tqdm(range(len(data)), disable=not self.config.use_tqdm, desc=f"init_ret"):
             try:
                 value = data[i][f"question"]
                 query_count += 1
@@ -49,14 +69,14 @@ class Inferrer:
                 flat_context_add = [item for sublist in context_add for item in sublist]
                 result = [[d["title"], d["full_text"]] for d in flat_context_add]
                 data[i][f"context"] = result
-        if logs:
+        if self.config.logs:
             print(f"init total queries: {query_count}\nerrors: {error_count}")
         return data
     
-    def retrieval_iter(self, data, iteration, use_tqdm=True, logs=True):
+    def retrieval_iter(self, data, iteration):
         query_count= 0
         error_count= 0
-        for i in tqdm(range(len(data)), disable= not use_tqdm, desc=f"iter_{iteration}_2_ret"):
+        for i in tqdm(range(len(data)), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_2_ret"):
             try:
                 subqueries = data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"]
                 query_count += 1
@@ -71,23 +91,17 @@ class Inferrer:
                 flat_context_add = [item for sublist in context_add for item in sublist]
                 result = [[d["title"], d["full_text"]] for d in flat_context_add]
                 data[i][f"{Inferrer.dict_labels["retrieval_iter"]}_{iteration}"] = result
-        if logs:
+        if self.config.logs:
             print(f"{iteration} total queries: {query_count}\nerrors: {error_count}")
         return data
     
     #################################### info_check #################################### 
-    
-    def one_hop(self, query, context, generation_config, thinking=False):
-        prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context)
-        llm_res = self._call_llm(generation_config, prompt, enable_thinking=thinking, skip_special_tokens=True)
-        #TODO deal with thought
-        return llm_res["completion_decoded"]
-    
-    def info_check_iter(self, data, iteration, generation_config, enforce_grammar=True, add_onehop = False, ignore_ids=False, use_tqdm = True):
+        
+    def info_check_iter(self, data, iteration):
         prompt_list = []
         response_list = []
         col_name = f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"
-        for i in tqdm(range(0, len(data), 1), disable = not use_tqdm, desc=f"iter_{iteration}_0_gen"):
+        for i in tqdm(range(0, len(data), 1), disable = not self.config.use_tqdm, desc=f"iter_{iteration}_0_gen"):
             selected = data[i]
             
             if iteration != 0 and f"{Inferrer.dict_labels["retrieval_iter"]}_{iteration - 1}" not in selected.keys():
@@ -102,27 +116,32 @@ class Inferrer:
             prompt_list.append(prompt)
 
             grammar = None
-            if enforce_grammar:
+            if self.config.enforce_grammar:
                 grammar = Regex(self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"])
             
             
-            llm_res = self._call_llm(generation_config, prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
+            llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
             predicted_m = llm_res["completion_decoded"]
             # TODO deal with thought
             response_list.append(predicted_m)
 
-            if add_onehop:
+            if self.config.add_onehop and iteration==0:
                 # TODO deal with onehop training
-                predicted_o = self.one_hop(query, context, generation_config)
+                predicted_o = self._one_hop(query, context)
             try:
                 data[i][col_name] = predicted_m
-                if not ignore_ids:
-                    data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.task_labels["info_check_iter"])
-                if add_onehop:
+                data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.task_labels["info_check_iter"])
+                if self.config.add_onehop and iteration==0:
                     data[i]["onehop"] = predicted_o
             except Exception as e:
                 print(f"exception at {i}")
-        return data, prompt_list, response_list
+        return data
+    
+    def _one_hop(self, query, context, thinking=False):
+        prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context)
+        llm_res = self._call_llm(prompt, enable_thinking=thinking, skip_special_tokens=True)
+        #TODO deal with thought
+        return llm_res["completion_decoded"]
     
     def _append_llm_res(self, data, llm_res, data_num, iteration, step_name):
         i = data_num
@@ -144,10 +163,10 @@ class Inferrer:
     
     #################################### subq_construct ####################################
     
-    def subq_construct_iter(self, data, iteration, generation_config, enforce_grammar=True, ignore_ids=False, use_tqdm=True):
+    def subq_construct_iter(self, data, iteration):
         prompt_list = []
         response_list = []
-        for i in tqdm(range(0, len(data), 1), disable= not use_tqdm, desc=f"iter_{iteration}_1_2q"):
+        for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_1_2q"):
             subq_json = self.prompts_and_tools[Task.SUBQUERY_CONSTRUCT.value]
             selected = data[i]
             query = selected["question"]
@@ -167,10 +186,10 @@ class Inferrer:
             prompt_list.append(prompt)
             
             grammar = None
-            if enforce_grammar:
+            if self.config.enforce_grammar:
                 grammar = Regex(subq_json["pattern"])
             
-            llm_res = self._call_llm(generation_config, prompt, grammar=grammar, tools=tools)
+            llm_res = self._call_llm(prompt, grammar=grammar, tools=tools)
             llm_output = llm_res["completion_decoded"]
             pattern = subq_json["pattern"]
             regex_groups = subq_json["regex_groups"]
@@ -182,15 +201,14 @@ class Inferrer:
                         subqueries.append(match.group(g))
             else:
                 #TODO warning
-                print(f"the following query output is malformed:\n{llm_output}.")
+                print(f"The following query attempt is malformed:\n{llm_output}.")
                 continue
             try:
                 data[i][f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}"] = subqueries
-                if not ignore_ids:
-                    data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.task_labels["subq_construct_iter"])
+                data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.task_labels["subq_construct_iter"])
             except Exception as e:
                 print(f"exception at {i}")
-        return data, prompt_list, response_list
+        return data
     
     #################################### finalize ####################################
         
@@ -250,22 +268,7 @@ class Inferrer:
     
     #################################### internal ####################################
     
-    def _get_deduplicated_context(self, context, iteration, selected_datum):
-        context = context.copy()
-        if not (iteration == 0):
-            try:
-                for k in range(0, iteration):
-                    context.extend(selected_datum[f"{Inferrer.dict_labels["retrieval_iter"]}_{k}"])
-            except KeyError:
-                # TODO warning
-                pass
-        unique = {}
-        for k, v in context:
-            unique[k] = v 
-        context = [[k, v] for k, v in unique.items()]
-        return context
-    
-    def _call_llm(self, generation_config, prompt, grammar = None, tools = None, skip_special_tokens=False, enable_thinking=False):
+    def _call_llm(self, prompt, grammar = None, tools = None, skip_special_tokens=False, enable_thinking=False):
         #TODO is it never batched?
         text = self.tokenizer.apply_chat_template(
             prompt,
@@ -292,34 +295,17 @@ class Inferrer:
         if grammar:
             outlines_transformers = CustomizedTransformers(self.model, self.tokenizer)
             output_type = grammar
-            outputs = outlines_transformers.generate(text, inputs, output_type=output_type, generation_config=generation_config)
+            outputs = outlines_transformers.generate(text, inputs, output_type=output_type, generation_config=self.config.generation_config)
             
         else:
             outputs = self.model.generate(
                 **inputs,
-                generation_config = generation_config
+                generation_config = self.config.generation_config
             )
         
         # Note: thinking is disabled for now
         if(enable_thinking):
             raise NotImplementedError("Thinking is currently disabled.")
-        # modified_config = GenerationConfig.from_dict(generation_config.to_dict())
-        # modified_config.max_new_tokens = 25
-        
-        # If still thinking
-        # if enable_thinking and (151668 not in outputs[0]):
-        #     extended_ids = torch.cat([outputs[0], torch.tensor([151668], device="cuda")])
-        #     outputs = self.model.generate(
-        #         input_ids=extended_ids.unsqueeze(0),
-        #         generation_config = modified_config
-        #     )
-        
-        # # If not done    
-        # if self.tokenizer.eos_token_id not in outputs[0]:
-        #     outputs = self.model.generate(
-        #         input_ids=extended_ids.unsqueeze(0),
-        #         generation_config = modified_config
-        #     )
 
         output_ids = outputs[0]
         full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=skip_special_tokens)
@@ -349,6 +335,21 @@ class Inferrer:
             "thought_decoded": thought,
             "completion_decoded": completion,
         }
+    
+    def _get_deduplicated_context(self, context, iteration, selected_datum):
+        context = context.copy()
+        if not (iteration == 0):
+            try:
+                for k in range(0, iteration):
+                    context.extend(selected_datum[f"{Inferrer.dict_labels["retrieval_iter"]}_{k}"])
+            except KeyError:
+                # TODO warning
+                pass
+        unique = {}
+        for k, v in context:
+            unique[k] = v 
+        context = [[k, v] for k, v in unique.items()]
+        return context
     
     # Transplanted from transformers Trainer._prepare_input    
     def _prepare_input(self, data):
@@ -380,26 +381,29 @@ class Inferrer:
     
     #################################### main ####################################
     
-    #TODO put some of the parameters inside config
-    def infer(self, data, generation_config, enforce_grammar=True, iterations=3, start_iter=0, use_tqdm=False, logs=False, add_onehop=False, calculate_time=False, ignore_ids=False):
+    def infer(self, data, start_iter=0):
         timer_start = time.time()
         if start_iter == 0:
-            data = self.retrieval_init(data, use_tqdm=use_tqdm, logs=logs)
+            data = self.retrieval_init(data)
         iterations_processed = 0
-        for i in range(start_iter, iterations):
-            data, _, __ = self.info_check_iter(data, i, generation_config, enforce_grammar=enforce_grammar, add_onehop=(add_onehop and i == 0), ignore_ids=ignore_ids, use_tqdm=use_tqdm)
-            data, _, __ = self.subq_construct_iter(data, i, generation_config, enforce_grammar=enforce_grammar, ignore_ids=ignore_ids, use_tqdm=use_tqdm)
-            data = self.retrieval_iter(data, i, use_tqdm=use_tqdm, logs=logs)
+        for i in range(start_iter, self.config.iterations):
+            data = self.info_check_iter(data, i)
+            data = self.subq_construct_iter(data, i)
+            data = self.retrieval_iter(data, i)
             iterations_processed += 1
-        if iterations_processed == iterations - start_iter:
-            data, _, __ = self.info_check_iter(data, iterations, generation_config, enforce_grammar=enforce_grammar, use_tqdm=use_tqdm)
-        data = self.finalize_data(data, iterations)
+        data = self.info_check_iter(data, self.config.iterations)
+        data = self.finalize_data(data, self.config.iterations)
+        if self.config.remove_intermediate_steps:
+            data = utils.remove_intermediate_steps(data)
         timer_end = time.time()
         
         elapsed_time = timer_end - timer_start
         hours = int(elapsed_time // 3600)
         minutes = int(elapsed_time % 3600 // 60)
         seconds = int(elapsed_time % 60)
-        if calculate_time:
+        if self.config.calculate_time:
             print(f"inference execution time: {hours}h {minutes}m {seconds}s")
         return data
+    
+    def reconfigure(self, inferrer_config):
+        self.config = inferrer_config
