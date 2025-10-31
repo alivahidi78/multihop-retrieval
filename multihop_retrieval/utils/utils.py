@@ -1,45 +1,31 @@
 import re
 import os
 import json
+import torch
 import os
 from enum import Enum
 from string import Template
 import string
 from collections import Counter
 
+def unbundle(data):
+    flat = [item for sublist in data for item in sublist]
+    counts = [len(sublist) for sublist in data]
+    return flat, counts
+
+def rebundle(flat, counts):
+    reconstructed = []
+    idx = 0
+    for count in counts:
+        reconstructed.append(flat[idx: idx + count])
+        idx += count
+    return reconstructed
+
 class Task(Enum):
     INFO_CHECK = "INFO_CHECK"
     SUBQUERY_CONSTRUCT = "SUBQUERY_CONSTRUCT"
     SHORT_ANSWER = "SHORT_ANSWER"
     
-def extract_arg_values(text: str, arguments):
-    # Step 1: Find the <tool_call>...</tool_call> block
-    match = re.search(r">\s*(\{.*?\})\s*<", text, re.DOTALL)
-    if not match:
-        return None, "No valid <...> block found"
-
-    json_str = match.group(1)
-
-    # Step 2: Try to parse JSON
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        return None, f"Invalid JSON: {e}"
-
-    # Step 3: Validate format
-    if "arguments" not in data or not isinstance(data["arguments"], dict):
-        return None, "Missing or invalid 'arguments' key in JSON"
-
-    # Step 4: Extract values
-    extracted_values = [
-        v for k, v in data["arguments"].items() if k in arguments
-    ]
-
-    if not extracted_values:
-        return None, "No values found"
-
-    return extracted_values, None
-
 def get_tools(prompts_and_tools, task: Task):
     return prompts_and_tools[task.value]["tools"]
 
@@ -107,15 +93,21 @@ def compute_f1(a_gold, a_pred):
     f1 = (2 * precision * recall) / (precision + recall)
     return f1
 
-def unbundle(data):
-    flat = [item for sublist in data for item in sublist]
-    counts = [len(sublist) for sublist in data]
-    return flat, counts
+def remove_tensors(obj):
+    if isinstance(obj, torch.Tensor):
+        return None  # or skip entirely
+    elif isinstance(obj, dict):
+        return {k: remove_tensors(v) for k, v in obj.items() if not isinstance(v, torch.Tensor)}
+    elif isinstance(obj, list):
+        return [remove_tensors(v) for v in obj if not isinstance(v, torch.Tensor)]
+    elif isinstance(obj, tuple):
+        return tuple(remove_tensors(v) for v in obj if not isinstance(v, torch.Tensor))
+    else:
+        return obj
 
-def rebundle(flat, counts):
-    reconstructed = []
-    idx = 0
-    for count in counts:
-        reconstructed.append(flat[idx: idx + count])
-        idx += count
-    return reconstructed
+def remove_intermediate_steps(data):
+    keys_to_remove = ["prompt", "prompt_ids", "prompt_mask", "thought_and_completion_ids", "completion_decoded"]
+    data = remove_tensors(data)
+    for i, d in enumerate(data):
+        data[i] = {k: v for k, v in d.items() if k not in keys_to_remove}
+    
