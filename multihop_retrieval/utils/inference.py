@@ -2,7 +2,7 @@ import torch, re, json, time, os
 from tqdm import tqdm
 from transformers.generation.configuration_utils import GenerationConfig
 from multihop_retrieval.utils import utils
-from multihop_retrieval.utils.outlines_transformers import CustomizedTransformers
+from multihop_retrieval.utils.outlines_transformers import OutlinesWrapper
 from .utils import Task, method_task_id
 from .retrieval import Retriever
 from outlines.types import Regex
@@ -324,9 +324,9 @@ class Inferrer:
         inputs["input_ids"], inputs["attention_mask"] = prompt_ids, prompt_mask
         
         if grammar:
-            outlines_transformers = CustomizedTransformers(self.model, self.tokenizer)
+            outlines_wrapped = OutlinesWrapper(self.model, self.tokenizer)
             output_type = grammar
-            outputs = outlines_transformers.generate(text, inputs, output_type=output_type, generation_config=self.config.generation_config)
+            outputs = outlines_wrapped.generate(text, inputs, output_type=output_type, generation_config=self.config.generation_config)
             
         else:
             outputs = self.model.generate(
