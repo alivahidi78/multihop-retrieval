@@ -2,11 +2,12 @@ import os
 import bz2
 import ast
 class Retriever:
-    def __init__(self, wiki_path, embedder, index, metadata):
+    def __init__(self, wiki_path, embedder, index, metadata, title_inclusive=False):
         self.wiki_path = wiki_path
         self.embedder = embedder
         self.index = index
         self.metadata = metadata
+        self.title_inclusive=title_inclusive
         
     def retrieve_info_rag(self, query_list, top_k=5):
         result_list = []
@@ -46,12 +47,17 @@ class Retriever:
                     if i == line_number:
                         line_raw = line.strip()
                         data = ast.literal_eval(line_raw)
-                        full_text= data.get("text", line_raw)
-                        sentence = full_text[sentence_num]
+                        full_text = data.get("text", line_raw)
                         title = data.get("title", line_raw)
+                        if self.title_inclusive:
+                            full_text.insert(0, title)
+                        sentence = full_text[sentence_num]
                         info = {}
                         info["title"] = title
-                        info["full_text"] = full_text
+                        if self.title_inclusive:
+                            info["full_text"] = full_text[1:]
+                        else:
+                            info["full_text"] = full_text
                         info["sentence"] = sentence
                         return info
         except Exception as e:
