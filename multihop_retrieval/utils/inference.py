@@ -125,13 +125,13 @@ class Inferrer:
             if self.config.enforce_grammar:
                 grammar = Regex(self.prompts_and_tools[task_id.value]["pattern"])
             
+            #TODO batch this
             llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
+            
             predicted_m = llm_res["completion_decoded"]
-            # TODO deal with thought
             response_list.append(predicted_m)
 
             if self.config.add_onehop and iteration==0:
-                # TODO deal with onehop training
                 predicted_o = self._one_hop(query, context)
             try:
                 data[i][col_name] = predicted_m
@@ -146,7 +146,6 @@ class Inferrer:
     def _one_hop(self, query, context, thinking=False):
         prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context)
         llm_res = self._call_llm(prompt, enable_thinking=thinking, skip_special_tokens=True)
-        #TODO deal with thought
         return llm_res["completion_decoded"]
     
     def _append_llm_res(self, data, llm_res, data_num, iteration, step_name):
@@ -204,6 +203,7 @@ class Inferrer:
             if self.config.enforce_grammar:
                 grammar = Regex(subq_json["pattern"])
             
+            #TODO batch this
             llm_res = self._call_llm(prompt, grammar=grammar, tools=tools)
             llm_output = llm_res["completion_decoded"]
             pattern = subq_json["pattern"]
@@ -215,7 +215,7 @@ class Inferrer:
                     if match.group(g):
                         subqueries.append(match.group(g))
             else:
-                #TODO warning
+                #FIXME warning
                 print(f"The following query attempt is malformed:\n{llm_output}.")
                 continue
             try:
@@ -290,7 +290,6 @@ class Inferrer:
     #################################### internal ####################################
     
     def _call_llm(self, prompt, grammar = None, tools = None, skip_special_tokens=False, enable_thinking=False):
-        #TODO is it never batched?
         text = self.tokenizer.apply_chat_template(
             prompt,
             tools = tools,
@@ -364,7 +363,7 @@ class Inferrer:
                 for k in range(0, iteration):
                     context.extend(selected_datum[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
             except KeyError:
-                # TODO warning
+                # FIXME warning
                 pass
         unique = {}
         for k, v in context:

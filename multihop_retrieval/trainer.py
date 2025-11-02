@@ -163,25 +163,110 @@ class MultihopGRPOTrainer(GRPOTrainer):
         if self.args.num_generations != self.args.per_device_train_batch_size:
             raise NotImplementedError("num_generations should be equal to per_device_train_batch_size.")
         
-        if self.use_vllm or self.use_transformers_paged:
-            raise NotImplementedError("use_vllm or use_transformers_paged is not currently supported.")
-        
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
         data = copy.deepcopy(inputs)
         
+        if self.use_vllm:
+            from vllm import LLM, SamplingParams
+            from vllm.sampling_params import GuidedDecodingParams
+            # raise NotImplementedError("use_vllm is not currently supported.")
+            if self.vllm_mode == "colocate" and self.args.vllm_enable_sleep_mode:
+                # wake up colocated vLLM instances if needed
+                torch.cuda.empty_cache()  # required to avoid OOM in some cases
+                self.llm.wake_up()
+
+            # First, update the vLLM weights if needed
+            if self.state.global_step != self._last_loaded_step:
+                self._move_model_to_vllm()
+                self._last_loaded_step = self.state.global_step
+
+            # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
+            if self.vllm_mode == "server":
+                raise NotImplementedError("vllm server mode is not currently supported.")
+            elif self.vllm_mode == "colocate":
+                #TODO
+                if self.guided_decoding_regex:
+                    #TODO set if enforce_grammar is true
+                    guided_decoding = GuidedDecodingParams(regex=self.guided_decoding_regex)
+                else:
+                    guided_decoding = None
+
+                generation_kwargs = {
+                    "n": 1,  # vLLM on each GPU generates only 1 in colocate mode
+                    "repetition_penalty": self.repetition_penalty,
+                    "temperature": self.temperature,
+                    "top_p": self.top_p,
+                    "top_k": -1 if self.top_k is None else self.top_k,
+                    "min_p": 0.0 if self.min_p is None else self.min_p,
+                    "max_tokens": self.max_completion_length,
+                    "guided_decoding": guided_decoding,
+                    "logprobs": 0,  # only return the logprob of the generated token
+                }
+                if self.args.generation_kwargs is not None:
+                    generation_kwargs.update(self.args.generation_kwargs)
+                sampling_params = SamplingParams(**generation_kwargs)
+
+                if self.vllm_tensor_parallel_size > 1:
+                    # Gather prompts from all ranks in the TP group and flatten.
+                    # Each rank starts with its own prompts; after gathering, all ranks see the full group set.
+                    prompts_text = None #TODO
+                    orig_size = len(prompts_text)
+                    gathered_prompts = [None for _ in range(self.vllm_tensor_parallel_size)]
+                    torch.distributed.all_gather_object(gathered_prompts, prompts_text, group=self.tp_group)
+                    all_prompts_text = [p for sublist in gathered_prompts for p in sublist]
+
+                    all_images = None
+                else:
+                    all_prompts_text = prompts_text
+                    all_images = None
+
+                vllm_inputs = all_prompts_text
+
+                with profiling_context(self, "vLLM.generate"):
+                    all_outputs = self.llm.generate(vllm_inputs, sampling_params=sampling_params, use_tqdm=False)
+
+                completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
+                all_logprobs = [
+                    [next(iter(lp.values())).logprob for lp in output.logprobs]
+                    for outputs in all_outputs
+                    for output in outputs.outputs
+                ]
+
+                if self.vllm_tensor_parallel_size > 1:
+                    # Slice completions for this rank within its TP group.
+                    # Each rank generates all outputs — we keep only our share.
+                    local_rank_in_group = torch.distributed.get_rank(group=self.tp_group)
+                    tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
+                    completion_ids = completion_ids[tp_slice]
+                    all_logprobs = all_logprobs[tp_slice]
+
+                if self.args.vllm_enable_sleep_mode:
+                    self.llm.sleep(level=1)
+
+            # Pad the completions, and concatenate them with the prompts
+            completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
+            completion_ids = pad(completion_ids, padding_value=self.pad_token_id)
+            prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+            sampling_per_token_logps = [
+                torch.tensor(logprobs, device=device, dtype=torch.float32) for logprobs in all_logprobs
+            ]
+            sampling_per_token_logps = pad(sampling_per_token_logps, padding_value=0.0)
+        if self.use_transformers_paged:
+            raise NotImplementedError("use_transformers_paged is not currently supported.")
+        else:
         # Context transplated from GRPOTrainer
-        with (
-            profiling_context(self, "transformers.generate"),
-            unwrap_model_for_generation(
-                self.model_wrapped, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
-            ) as unwrapped_model,
-            torch.no_grad(),
-            FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
-        ):  
-            inferrer_config = InferrerConfig(generation_config = self.generation_config, iterations = self.iterations, enforce_grammar = self.enforce_grammar)
-            inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools, inferrer_config = inferrer_config)
-            data = inferrer.infer_basic(data)
+            with(
+                profiling_context(self, "transformers.generate"),
+                unwrap_model_for_generation(
+                    self.model_wrapped, self.accelerator, gather_deepspeed3_params=self.args.ds3_gather_for_generation
+                ) as unwrapped_model,
+                torch.no_grad(),
+                FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
+            ):  
+                inferrer_config = InferrerConfig(generation_config = self.generation_config, iterations = self.iterations, enforce_grammar = self.enforce_grammar)
+                inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools, inferrer_config = inferrer_config)
+                data = inferrer.infer_basic(data)
         
         final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]
@@ -327,7 +412,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())
 
         # Log prompt and completion texts
-        # TODO replace this with user query instead? 
+        # FIXME replace this with user query instead? 
         # Note: probably irrelevant for training
         self._logs["prompt"].extend(gather_object(prompts_bundled))
         self._logs["completion"].extend(gather_object(completions_bundled))
@@ -371,7 +456,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         ):
             with profiling_context(self, reward_func_name):
                 if isinstance(reward_func, nn.Module):  
-                    # TODO
                     raise NotImplementedError("models as reward functions are not currently supported.")
                 else:
                     output_reward_func = reward_func(

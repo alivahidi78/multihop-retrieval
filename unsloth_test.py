@@ -135,6 +135,7 @@ if __name__ == "__main__":
         report_to="wandb",
         run_name=run_name,
         torch_empty_cache_steps = 1,
+        reward_weights=[5,3,1,1]
     )
     
     retriever = Retriever(WIKI_PATH, embedder, cpu_index, metadata)

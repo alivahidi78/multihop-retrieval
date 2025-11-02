@@ -59,6 +59,4 @@ class OutlinesWrapper(Transformers):
             **inputs,
             **inference_kwargs,
         )
-        #TODO review the code for this method
-        # is_encoder_decoder
         return output_ids
