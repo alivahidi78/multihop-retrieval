@@ -17,12 +17,13 @@ from contextlib import nullcontext
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None):
+    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, low_vram=False):
         self.iterations = iterations
         self.retriever = retriever
         self.unbundled_batching = unbundled_batching
         self.prompts_and_tools = prompts_and_tools
         self.enforce_grammar = enforce_grammar
+        self.low_vram = low_vram
         
         if reward_funcs == None:
             reward_funcs = MultihopGRPOTrainer.get_default_reward_functions(self.prompts_and_tools)
@@ -402,5 +403,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         return super()._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, pixel_values, image_grid_thw, pixel_attention_mask, image_sizes)
 
     def training_step(self, model, inputs, num_items_in_batch = None):
-        torch.cuda.empty_cache()
+        if self.low_vram:
+            torch.cuda.empty_cache()
         return super().training_step(model, inputs, num_items_in_batch)
