@@ -163,21 +163,7 @@ class Inferrer:
         return data    
     
     def _check_done(self, response, task_id):
-        positive_tag = self.prompts_and_tools[task_id.value]["positive_tag"]
-        negative_tag = self.prompts_and_tools[task_id.value]["negative_tag"]
-        tag_group = self.prompts_and_tools[task_id.value]["tag_group"]
-        pattern = self.prompts_and_tools[task_id.value]["pattern"]
-        match = re.search(pattern, response) 
-        if match:
-            group_text = match.group(tag_group)
-            if group_text is None:
-                pass
-            elif positive_tag in match.group(tag_group):
-                return True
-            elif negative_tag in match.group(tag_group):
-                return False
-        print(f"Response malformed: {response}")
-        return False
+        return utils.information_judged_enough(self.prompts_and_tools, response, task_id)[0]
     
     #################################### provide_answer ####################################
     @method_task_id(Task.PROVIDE_ANSWER)

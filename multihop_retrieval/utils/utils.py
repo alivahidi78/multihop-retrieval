@@ -125,3 +125,21 @@ def remove_intermediate_steps(data):
         data[i] = {k: v for k, v in d.items() if k not in keys_to_remove}
     return data
     
+def information_judged_enough(prompts_and_tools, response, task_id):
+    """returns judgement result and format check."""
+    positive_tag = prompts_and_tools[task_id.value]["positive_tag"]
+    negative_tag = prompts_and_tools[task_id.value]["negative_tag"]
+    tag_group = prompts_and_tools[task_id.value]["tag_group"]
+    pattern = prompts_and_tools[task_id.value]["pattern"]
+    match = re.search(pattern, response) 
+    if match:
+        group_text = match.group(tag_group)
+        if group_text is None:
+            pass
+        elif positive_tag in match.group(tag_group):
+            return True, False
+        elif negative_tag in match.group(tag_group):
+            return False, False
+    print(f"Response malformed: {response}")
+    # enough, malformed
+    return False, True

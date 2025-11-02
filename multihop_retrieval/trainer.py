@@ -72,10 +72,12 @@ class MultihopGRPOTrainer(GRPOTrainer):
                         for j, c in enumerate(context):
                             if(f[0] == c[0]):
                                 supported_ret[i] = True
-                    positive_tag = prompts_and_tools[utils.Task.INFO_CHECK.value]["positive_tag"]
-                    
-                    #FIXME fix the below line
-                    if positive_tag in d[f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}"]:  
+                                
+                    response = d[f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}"]
+                    enough, malformed = utils.information_judged_enough(prompts_and_tools, response, Task.INFO_CHECK)
+                    if malformed:
+                       rewards[index] = -5 
+                    elif enough:  
                         if all(supported_ret):
                             if exact_rew[index] == 1:
                                 rewards[index] = 5
@@ -87,15 +89,15 @@ class MultihopGRPOTrainer(GRPOTrainer):
                             elif f1_rew[index] >= 0.5:
                                 rewards[index] = 1
                         else:
-                            rewards[index] = -20
+                            rewards[index] = -5
                     else:
                         # information_not_sufficient
                         if all(supported_ret):
-                            rewards[index] = -20
+                            rewards[index] = -5
                         elif (True in supported_ret):
                             pass
                         else:
-                            rewards[index] = 10
+                            rewards[index] = 5
                             
                     index += 1
                     
@@ -112,8 +114,10 @@ class MultihopGRPOTrainer(GRPOTrainer):
             index = 0
             for d in data:
                 iteration = 0
-                while(f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}" in d.keys()):
-                    index += 1
+                ic_label = f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}"
+                while(ic_label in d.keys()):
+                    index += 1 
+                    enough, malformed = utils.information_judged_enough(prompts_and_tools, d[ic_label], Task.INFO_CHECK)
                     
                     if f"{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}_{iteration}" in d.keys():
                         supporting_facts = d["supporting_facts"]
@@ -144,9 +148,11 @@ class MultihopGRPOTrainer(GRPOTrainer):
                                 rewards[index] = -1
                         except KeyError:
                             print("subq key error")
-                            rewards[index] = -20
+                            rewards[index] = -5
                         index += 1
-                        
+                    elif(not enough and not malformed):
+                        print("subq malformed")
+                        rewards[index] = -5  
                     iteration += 1
             return rewards    
         
