@@ -11,7 +11,7 @@ CHECKPOINT_EVERY_N_VECTORS = 200000
 BATCH_SIZE = 512
 MODEL_BATCH_SIZE = 256
 
-def create_flat_embeddings(sentence_transformer, bz2_dir, output_dir, title_key="title", text_key="text", embedding_dim = 384, device="cuda", include_title=True, url_after=None):
+def create_flat_embeddings(sentence_transformer, bz2_dir, output_dir, title_key="title", text_key="text", embedding_dim = 384, device="cuda", include_title=False, url_after=None):
     model = SentenceTransformer(sentence_transformer, device=device)
     lookup = []
     embeddings = []
@@ -35,7 +35,7 @@ def create_flat_embeddings(sentence_transformer, bz2_dir, output_dir, title_key=
                 if include_title:
                     text.insert(0, title)    
                 if not text:
-                    print("missing text")
+                    print(f"missing text at line {line_number} of file {file}")
                     continue
                 for sentence_num, sentence in enumerate(text):
                     if not isinstance(sentence, str) or not sentence.strip():
@@ -73,7 +73,7 @@ def create_flat_embeddings(sentence_transformer, bz2_dir, output_dir, title_key=
                         
     # Process any leftover texts
     if text_batch:
-        vectors = model.encode(text_batch, batch_size=64, device="cuda")
+        vectors = model.encode(text_batch, batch_size=64, device=device)
         vectors = np.array(vectors).astype("float32")
         index.add(vectors)
         lookup.extend(meta_batch)
@@ -85,7 +85,7 @@ def create_flat_embeddings(sentence_transformer, bz2_dir, output_dir, title_key=
             json.dump(lookup, f_out)
         print(f"Final checkpoint {chunk_id} saved with {total_vectors} vectors")
  
-def create_ivf_embeddings(flat_index, output_path, nlist=3000):
+def create_ivf_embeddings(flat_index, output_path, nlist=4000):
     d = flat_index.d           # dimension of vectors
     nb = flat_index.ntotal
     quantizer = faiss.IndexFlatL2(d)  

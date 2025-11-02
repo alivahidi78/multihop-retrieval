@@ -24,7 +24,11 @@ class InferrerConfig:
             "add_onehop": False,
             "calculate_time": False,
             "remove_intermediate_steps": False,
-            "device": "cuda"
+            "device": "cuda",
+            "frozen_tasks": None, # Has to be excluded also in trainer
+            # list of tasks
+            "frozen_models": None
+            # {Task.A: model_1}
         }
         defaults.update(kwargs)
         for key, value in defaults.items():
@@ -35,7 +39,7 @@ class Inferrer:
         Task.RETRIEVE: "step_ret",
         Task.INFO_CHECK: "step_inf",
         Task.PROVIDE_ANSWER: "step_pro", # variation of info_check
-        Task.VERIFY_OR_DENY: "step_vod", 
+        Task.VERIFY_OR_DENY: "step_vod",
         Task.SUBQUERY_CONSTRUCT: "step_que",
         Task.SUBQUERY_CONSTRUCT_WITH_HISTORY: "step_quh" # variation of subq_construct
     }
