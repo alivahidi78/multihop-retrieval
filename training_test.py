@@ -1,3 +1,4 @@
+# Note: This is non-functional
 import json, os, copy
 from dotenv import load_dotenv
 from multihop_retrieval.utils.inference import Inferrer 

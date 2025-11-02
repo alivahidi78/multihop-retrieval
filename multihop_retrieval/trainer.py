@@ -1,5 +1,6 @@
 from multihop_retrieval.utils.inference import Inferrer, InferrerConfig
 from multihop_retrieval.utils import utils
+from multihop_retrieval.utils.utils import Task
 
 from trl import GRPOTrainer
 from trl.models import unwrap_model_for_generation
@@ -55,14 +56,14 @@ class MultihopGRPOTrainer(GRPOTrainer):
             index = 0
             for d in data:
                 iteration = 0
-                while(f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}" in d.keys()):
+                while(f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}" in d.keys()):
                     supporting_facts = d["supporting_facts"]
                     context = d["context"]
                     if not (iteration == 0):
                         try:
                             for k in range(0, iteration):
                                 context = context.copy()
-                                context.extend(d[f"{Inferrer.dict_labels["retrieval_iter"]}_{k}"])
+                                context.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
                         except KeyError:
                             print("info key error")
                     supported_ret = [False]*len(supporting_facts)
@@ -71,7 +72,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
                             if(f[0] == c[0]):
                                 supported_ret[i] = True
                     positive_tag = prompts_and_tools[utils.Task.INFO_CHECK.value]["positive_tag"]
-                    if positive_tag in d[f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}"]:
+                    
+                    #FIXME fix the below line
+                    if positive_tag in d[f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}"]:  
                         if all(supported_ret):
                             if exact_rew[index] == 1:
                                 rewards[index] = 5
@@ -95,7 +98,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                             
                     index += 1
                     
-                    if f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}" in d.keys():
+                    if f"{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}_{iteration}" in d.keys():
                         index += 1
                     iteration += 1
             return rewards
@@ -108,15 +111,15 @@ class MultihopGRPOTrainer(GRPOTrainer):
             index = 0
             for d in data:
                 iteration = 0
-                while(f"{Inferrer.dict_labels["info_check_iter"]}_{iteration}" in d.keys()):
+                while(f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}" in d.keys()):
                     index += 1
                     
-                    if f"{Inferrer.dict_labels["subq_construct_iter"]}_{iteration}" in d.keys():
+                    if f"{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}_{iteration}" in d.keys():
                         supporting_facts = d["supporting_facts"]
                         context = d["context"]
                         for k in range(0, iteration):
                             context = context.copy()
-                            context.extend(d[f"{Inferrer.dict_labels["retrieval_iter"]}_{k}"])
+                            context.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
                         supported_ret = [False]*len(supporting_facts)
                         for i, f in enumerate(supporting_facts):
                             for j, c in enumerate(context):
@@ -124,7 +127,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                                     supported_ret[i] = True  
                         try:
                             new_supported_ret = [False]*len(supporting_facts)
-                            new_ret = d[f"{Inferrer.dict_labels["retrieval_iter"]}_{iteration}"]
+                            new_ret = d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{iteration}"]
                             for i, f in enumerate(supporting_facts):
                                 for j, c in enumerate(new_ret):
                                     if(f[0] == c[0]):
@@ -390,10 +393,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         return rewards_unbundled
     
     #Overridden
-    def _compute_loss(self, model, inputs):
-        return super()._compute_loss(model, inputs)
-    
-    #Overridden
     def _get_per_token_logps_and_entropies(self, model, input_ids, attention_mask, logits_to_keep, batch_size=None, compute_entropy=False, pixel_values=None, image_grid_thw=None, pixel_attention_mask=None, image_sizes=None):
         # Note: this is meant solely for compute_loss calls within the training step.
         # A cleaner implementation might be possible
@@ -402,8 +401,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
             batch_size = self.unbundled_batching if mode == "train" else None
         return super()._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, pixel_values, image_grid_thw, pixel_attention_mask, image_sizes)
 
-    #Overridden
-    def _prepare_inputs(self, generation_batch):
-        # probably shouldn't:
-        # inputs = self._buffered_inputs[self._step % self.args.steps_per_generation]
-        return super()._prepare_inputs(generation_batch)
+    def training_step(self, model, inputs, num_items_in_batch = None):
+        torch.cuda.empty_cache()
+        return super().training_step(model, inputs, num_items_in_batch)

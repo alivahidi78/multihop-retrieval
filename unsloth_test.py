@@ -70,7 +70,7 @@ if __name__ == "__main__":
         cpu_index = faiss.read_index(f"{EMBEDDING_DIR}/ivf_index.faiss")
         cpu_index.nprobe = nprobe
     else:
-        chunk_dir = "../data/minilm-embedded/split"
+        chunk_dir = f"{EMBEDDING_DIR}/split"
         index_files = sorted(f for f in os.listdir(chunk_dir) if f.startswith("ivf_shard") and f.endswith(".faiss"))
         print(len(index_files))
         cpu_index = faiss.IndexShards()
@@ -122,18 +122,19 @@ if __name__ == "__main__":
         logging_dir="./logs",
         num_generations=8,
         per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
+        # per_device_eval_batch_size=8,
         logging_steps=5,
         save_steps=100,
         num_train_epochs= epochs,
         label_names=["labels"],
         gradient_accumulation_steps = 1,
         beta = 0.0,
-        eval_on_start=True,
-        eval_steps=50,
-        eval_strategy="steps",
+        # eval_on_start=True,
+        # eval_steps=50,
+        # eval_strategy="steps",
         report_to="wandb",
-        run_name=run_name
+        run_name=run_name,
+        torch_empty_cache_steps = 1,
     )
     
     retriever = Retriever(WIKI_PATH, embedder, cpu_index, metadata)
@@ -141,13 +142,13 @@ if __name__ == "__main__":
     eval_set = copy.deepcopy(all_data[train_limit:train_limit + eval_limit])
     trainer = MultihopGRPOTrainer(
         model=model,
-        args=training_args,
-        # iterations = 3,
         retriever = retriever,
         prompts_and_tools = prompts_and_tools,
-        # reward_funcs=reward_funcs(model),
+        args=training_args,
+        iterations = 2,
+        # reward_funcs=reward_funcs(),
         train_dataset = train_set,
-        eval_dataset = eval_set,
+        # eval_dataset = eval_set,
         unbundled_batching = 8
     )
     
