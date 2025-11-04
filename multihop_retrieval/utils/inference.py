@@ -118,7 +118,8 @@ class Inferrer:
             context = selected["context"]
             context = self._get_deduplicated_context(context, iteration, selected)
             tools = utils.get_tools(self.prompts_and_tools, task_id)
-            prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context)
+            context_str = utils.context_to_string(context)
+            prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context_str)
             prompt_list.append(prompt)
 
             grammar = None
@@ -144,7 +145,8 @@ class Inferrer:
     
     ### short_answer ###
     def _one_hop(self, query, context, thinking=False):
-        prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context)
+        context_str = utils.context_to_string(context)
+        prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context_str)
         llm_res = self._call_llm(prompt, enable_thinking=thinking, skip_special_tokens=True)
         return llm_res["completion_decoded"]
     
@@ -194,7 +196,8 @@ class Inferrer:
                 data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
             else:    
                 response = answer_match.group(answer_group)
-                prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context, response=response)
+                context_str = utils.context_to_string(context)
+                prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context_str, response=response)
 
                 grammar = None
                 if self.config.enforce_grammar:
@@ -232,7 +235,8 @@ class Inferrer:
             if(self._check_done(prev_response, prev_task_id)):
                 continue
             tools = utils.get_tools(self.prompts_and_tools, task_id)
-            prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context)
+            context_str = utils.context_to_string(context)
+            prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context_str)
             
             grammar = None
             if self.config.enforce_grammar:
@@ -264,7 +268,61 @@ class Inferrer:
     
     @method_task_id(Task.SUBQUERY_CONSTRUCT_WITH_HISTORY)
     def subq_construct_history_iter(self, data, iteration, prev_task_id, task_id=None):
-        pass
+        for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
+            subqh_json = self.prompts_and_tools[task_id.value]
+            selected = data[i]
+            query = selected["question"]
+            init_context = self._get_deduplicated_context(selected["context"], iteration)
+            
+            try:
+                prev_response = selected[f"{Inferrer.dict_labels[prev_task_id]}_{iteration}"]
+            except KeyError:
+                # the sample is skipped since there's no previous iteration.
+                continue
+
+            if(self._check_done(prev_response, prev_task_id)):
+                continue
+            tools = utils.get_tools(self.prompts_and_tools, task_id)
+            context_str = utils.context_to_string(init_context)
+            
+            if iteration == 0:
+                add_context_str = "\n"
+                past_queries_str = "\n"
+            else:  
+                add_context = self._get_deduplicated_context([], iteration, selected)
+                add_context_str = utils.context_to_string(add_context)
+                past_queries = []
+                for k in range(0, iteration):
+                    past_queries.extend(selected[f"{Inferrer.dict_labels[task_id]}_{k}"])
+                past_queries_str = utils.list_to_numbered(past_queries)
+                
+            prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context_str, past_queries=past_queries_str, additional_context=add_context_str)
+            
+            grammar = None
+            if self.config.enforce_grammar:
+                grammar = Regex(subqh_json["pattern"])
+            
+            #TODO batch this
+            llm_res = self._call_llm(prompt, grammar=grammar, tools=tools)
+            llm_output = llm_res["completion_decoded"]
+            pattern = subqh_json["pattern"]
+            regex_groups = subqh_json["regex_groups"]
+            match = re.search(pattern, llm_output)
+            subqueries = []
+            if match:
+                for g in regex_groups:
+                    if match.group(g):
+                        subqueries.append(match.group(g))
+            else:
+                #FIXME warning
+                print(f"The following query attempt is malformed:\n{llm_output}.")
+                continue
+            try:
+                data[i][f"{Inferrer.dict_labels[task_id]}_{iteration}"] = subqueries
+                data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.dict_labels[task_id])
+            except Exception as e:
+                print(f"exception at {i}")
+        return data
     
     #################################### finalize ####################################
         
@@ -391,15 +449,16 @@ class Inferrer:
             "completion_decoded": completion,
         }
     
-    def _get_deduplicated_context(self, context, iteration, selected_datum):
+    def _get_deduplicated_context(self, context, iteration, selected_datum=None):
         context = context.copy()
-        if not (iteration == 0):
-            try:
-                for k in range(0, iteration):
-                    context.extend(selected_datum[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
-            except KeyError:
-                # FIXME warning
-                pass
+        if selected_datum:
+            if not (iteration == 0):
+                try:
+                    for k in range(0, iteration):
+                        context.extend(selected_datum[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
+                except KeyError:
+                    # FIXME warning
+                    pass
         unique = {}
         for k, v in context:
             unique[k] = v 

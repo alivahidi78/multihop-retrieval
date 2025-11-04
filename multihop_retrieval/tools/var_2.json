@@ -87,7 +87,7 @@
         "prompt": [
             {
                 "role": "system",
-                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink about what pieces of information are missing and come up with multiple search queries (similar to google search) whose answer aids in finding the missing pieces of information. List these queries in your response.\nDO NOT REPEAT THE USER QUERY.Ask simpler questions instead.\nThis is the intitial context:\n<context>\n$context\n<\/context>\nThese are the questions you have previously asked:\n<list>\n$past_queries\n<\/list>\nThese are the information retrieved based on those queries:\n<context>\n$additional_context\n<\/context>"
+                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink about what pieces of information are missing and come up with multiple search queries (similar to google search) whose answer aids in finding the missing pieces of information. List these queries in your response.\nDO NOT REPEAT THE USER QUERY. Ask simpler questions instead.\nThis is the intitial context:\n<context>\n$context\n<\/context>\nThese are the questions you have previously asked:\n<list>\n$past_queries\n<\/list>\nThese are the information retrieved based on those queries:\n<context>\n$additional_context\n<\/context>"
             },
             {
                 "role": "user",

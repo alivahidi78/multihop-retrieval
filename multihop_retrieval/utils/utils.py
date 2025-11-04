@@ -44,7 +44,8 @@ def rebundle(flat, counts):
 def get_tools(prompts_and_tools, task: Task):
     return prompts_and_tools[task.value]["tools"]
 
-def get_prompts(prompts_and_tools, task:Task, query, context=None, **kwargs):
+
+def get_prompts(prompts_and_tools, task:Task, query, **kwargs):
     def substitute(obj, values):
         if isinstance(obj, dict):
             return {k: substitute(v, values) for k, v in obj.items()}
@@ -55,23 +56,30 @@ def get_prompts(prompts_and_tools, task:Task, query, context=None, **kwargs):
         else:
             return obj
         
-    context_modified = []
-    for i, (title, contents) in enumerate(context, start=1):
-        # join all content parts into one string
-        content_str = "".join(contents)
-        # format as required
-        context_modified.append(f"{i}. {title}:\n{content_str}")
-
-    context_str = "\n".join(context_modified)
-    
-    task_title = task.value
     values = {
         "query": query,
-        "context":  context_str,
     }
+    
     if kwargs:
         values.update(kwargs)
+        
+    task_title = task.value
     return substitute(prompts_and_tools[task_title]["prompt"], values)
+
+def context_to_string(context):
+    context_modified = []
+    for i, (title, contents) in enumerate(context, start=1):
+        content_str = "".join(contents)
+        context_modified.append(f"{i}. {title}:\n{content_str}")
+    context_str = "\n".join(context_modified)
+    return context_str
+
+def list_to_numbered(l):
+    subquery_list = []
+    for i, subquery in enumerate(l, start=1):
+        subquery_list.append(f"{i}. {subquery}\n")
+    past_queries_str = "\n".join(subquery_list)
+    return past_queries_str
 
 def normalize_answer(s):
     """Lower text and remove punctuation, articles, and extra whitespace."""
