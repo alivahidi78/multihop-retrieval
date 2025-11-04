@@ -157,6 +157,6 @@
         "pattern": "(yes|no)",
         "positive_tag": "yes",
         "negative_tag": "no",
-        "regex_group": 1
+        "tag_group": 1
     }
 }

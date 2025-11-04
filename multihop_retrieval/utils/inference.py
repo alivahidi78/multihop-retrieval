@@ -81,7 +81,7 @@ class Inferrer:
     def retrieval_iter(self, data, iteration, prev_task_id, task_id=None):
         query_count= 0
         error_count= 0
-        for i in tqdm(range(len(data)), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_2_ret"):
+        for i in tqdm(range(len(data)), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
             try:
                 subqueries = data[i][f"{Inferrer.dict_labels[prev_task_id]}_{iteration}"]
                 query_count += 1
@@ -107,7 +107,7 @@ class Inferrer:
         prompt_list = []
         response_list = []
         col_name = f"{Inferrer.dict_labels[task_id]}_{iteration}"
-        for i in tqdm(range(0, len(data), 1), disable = not self.config.use_tqdm, desc=f"iter_{iteration}_0_gen"):
+        for i in tqdm(range(0, len(data), 1), disable = not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
             selected = data[i]
             
             if iteration != 0 and f"{Inferrer.dict_labels[prev_task_id]}_{iteration - 1}" not in selected.keys():
@@ -162,25 +162,61 @@ class Inferrer:
         return data    
     
     def _check_done(self, response, task_id):
-        return utils.information_judged_enough(self.prompts_and_tools, response, task_id)[0]
+        return utils.information_judgement(self.prompts_and_tools, response, task_id)[0]
     
     #################################### provide_answer ####################################
     @method_task_id(Task.PROVIDE_ANSWER)
     def provide_answer_iter(self, data, iteration, prev_task_id, task_id=None):
-        pass
+        return self.info_check_iter(data, iteration, prev_task_id, task_id=task_id)
     
     #################################### verify_or_deny ####################################
     @method_task_id(Task.VERIFY_OR_DENY)
     def verify_or_deny_iter(self, data, iteration, prev_task_id, task_id=None):
-        pass
+        col_name = f"{Inferrer.dict_labels[task_id]}_{iteration}"
+        for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
+            selected = data[i]
+            query = selected["question"]
+            context = selected["context"]
+            tools = utils.get_tools(self.prompts_and_tools, task_id)
+            info_pattern = self.prompts_and_tools[prev_task_id.value]["pattern"]
+            answer_group = self.prompts_and_tools[prev_task_id.value]["answer_group"]
+            answer_match = re.search(info_pattern, prev_response)
+            context = self._get_deduplicated_context(context, iteration, selected)
+            try:
+                prev_response = selected[f"{Inferrer.dict_labels[prev_task_id]}_{iteration}"]
+            except KeyError:
+                # the sample is skipped since there's no previous iteration.
+                continue
+            if(not self._check_done(prev_response, prev_task_id)):
+                # response is no
+                data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
+            elif not answer_match or not answer_match.group(answer_group):
+                data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
+            else:    
+                response = answer_match.group(answer_group)
+                prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context, response=response)
+
+                grammar = None
+                if self.config.enforce_grammar:
+                    grammar = Regex(self.prompts_and_tools[task_id.value]["pattern"])
+                
+                #TODO batch this
+                llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
+                predicted_m = llm_res["completion_decoded"]
+
+                try:
+                    data[i][col_name] = predicted_m
+                    data = self._append_llm_res(data, llm_res, i, iteration, Inferrer.dict_labels[task_id])
+                except Exception as e:
+                    print(f"exception at {i}")
+        return data
+                
     
     #################################### subq_construct ####################################
     
     @method_task_id(Task.SUBQUERY_CONSTRUCT)
     def subq_construct_iter(self, data, iteration, prev_task_id, task_id=None):
-        prompt_list = []
-        response_list = []
-        for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_1_2q"):
+        for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
             subq_json = self.prompts_and_tools[task_id.value]
             selected = data[i]
             query = selected["question"]
@@ -197,7 +233,6 @@ class Inferrer:
                 continue
             tools = utils.get_tools(self.prompts_and_tools, task_id)
             prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context)
-            prompt_list.append(prompt)
             
             grammar = None
             if self.config.enforce_grammar:

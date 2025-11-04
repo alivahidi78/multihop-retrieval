@@ -22,7 +22,9 @@ def method_task_id(task_id:Task):
     def decorator(func):
         # func.task_id = task_id
         def wrapper(self, *args, **kwargs):
-            return func(self, *args, task_id=task_id, **kwargs)
+            if 'task_id' not in kwargs:
+                kwargs['task_id'] = task_id
+            return func(self, *args, **kwargs)
         return wrapper
     return decorator
 
@@ -42,7 +44,7 @@ def rebundle(flat, counts):
 def get_tools(prompts_and_tools, task: Task):
     return prompts_and_tools[task.value]["tools"]
 
-def get_prompts(prompts_and_tools, task:Task, query, context=None, past_queries=None):
+def get_prompts(prompts_and_tools, task:Task, query, context=None, **kwargs):
     def substitute(obj, values):
         if isinstance(obj, dict):
             return {k: substitute(v, values) for k, v in obj.items()}
@@ -67,6 +69,8 @@ def get_prompts(prompts_and_tools, task:Task, query, context=None, past_queries=
         "query": query,
         "context":  context_str,
     }
+    if kwargs:
+        values.update(kwargs)
     return substitute(prompts_and_tools[task_title]["prompt"], values)
 
 def normalize_answer(s):
@@ -125,7 +129,7 @@ def remove_intermediate_steps(data):
         data[i] = {k: v for k, v in d.items() if k not in keys_to_remove}
     return data
     
-def information_judged_enough(prompts_and_tools, response, task_id):
+def information_judgement(prompts_and_tools, response, task_id):
     """returns judgement result and format check."""
     positive_tag = prompts_and_tools[task_id.value]["positive_tag"]
     negative_tag = prompts_and_tools[task_id.value]["negative_tag"]
