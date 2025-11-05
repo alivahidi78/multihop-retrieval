@@ -182,13 +182,13 @@ class Inferrer:
             tools = utils.get_tools(self.prompts_and_tools, task_id)
             info_pattern = self.prompts_and_tools[prev_task_id.value]["pattern"]
             answer_group = self.prompts_and_tools[prev_task_id.value]["answer_group"]
-            answer_match = re.search(info_pattern, prev_response)
             context = self._get_deduplicated_context(context, iteration, selected)
             try:
                 prev_response = selected[f"{Inferrer.dict_labels[prev_task_id]}_{iteration}"]
             except KeyError:
                 # the sample is skipped since there's no previous iteration.
                 continue
+            answer_match = re.search(info_pattern, prev_response)
             if(not self._check_done(prev_response, prev_task_id)):
                 # response is no
                 data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
@@ -324,62 +324,6 @@ class Inferrer:
                 print(f"exception at {i}")
         return data
     
-    #################################### finalize ####################################
-        
-    def finalize_data_basic(self, data, iterations = 3):
-        positive_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["positive_tag"]
-        negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
-        info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
-        answer_group = self.prompts_and_tools[Task.INFO_CHECK.value]["answer_group"]
-        
-        ic_label = Inferrer.dict_labels[Task.INFO_CHECK]
-        sc_label = Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]
-        rv_label = Inferrer.dict_labels[Task.RETRIEVE]
-
-        for d in data:
-            d["ic_calls"] = sum(1 for key in d if key.startswith(ic_label))
-            d["sc_calls"] = sum(1 for key in d if key.startswith(sc_label))
-            d["rv_calls"] = sum(1 for key in d if key.startswith(rv_label)) + 1
-            d["llm_calls"] = d["ic_calls"] + d["sc_calls"]
-            d[f"multihop{iterations}"] = ""
-            d["error"] = ""
-
-            if f"{ic_label}_{0}" not in d:
-                d["error"] = "llm_start"
-                continue
-            # check from iteration_max down to iteration_0
-            for i in range(iterations, -1, -1):
-                key = f"{ic_label}_{i}"
-                query_key= f"{sc_label}_{i}"
-                ret_key= f"{rv_label}_{i}"
-                if key in d and isinstance(d[key], str):
-                    d["last_iter"] = i
-                    content = d[key]
-                    
-                    if ret_key in d:
-                        d["error"] = "generation"
-                        
-                    if query_key in d:
-                        d["error"] = "retrieval"
-                        break
-
-                    if negative_tag in content:
-                        if i == iterations:
-                            d["error"] = "info"
-                        else:
-                            d["error"] = "subquery"
-                        break
-                    
-                    match = re.search(info_pattern, content)
-                    if not match:
-                        d["error"] = "format"
-                    elif match.group(answer_group):
-                        d[f"multihop{iterations}"] = match.group(answer_group)
-                    else:
-                        d["error"] = "format"
-                    break  # stop after first valid key
-        return data
-    
     #################################### internal ####################################
     
     def _call_llm(self, prompt, grammar = None, tools = None, skip_special_tokens=False, enable_thinking=False):
@@ -493,6 +437,209 @@ class Inferrer:
             )
         return inputs
     
+    #################################### finalize ####################################
+        
+    def finalize_data_basic(self, data, iterations = 3):
+        positive_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["positive_tag"]
+        negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
+        info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
+        answer_group = self.prompts_and_tools[Task.INFO_CHECK.value]["answer_group"]
+        
+        ic_label = Inferrer.dict_labels[Task.INFO_CHECK]
+        sc_label = Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]
+        rv_label = Inferrer.dict_labels[Task.RETRIEVE]
+
+        for d in data:
+            d["ic_calls"] = sum(1 for key in d if key.startswith(ic_label))
+            d["sc_calls"] = sum(1 for key in d if key.startswith(sc_label))
+            d["rv_calls"] = sum(1 for key in d if key.startswith(rv_label)) + 1
+            d["llm_calls"] = d["ic_calls"] + d["sc_calls"]
+            d[f"multihop{iterations}"] = ""
+            d["error"] = ""
+
+            if f"{ic_label}_{0}" not in d:
+                d["error"] = "llm_start"
+                continue
+            # check from iteration_max down to iteration_0
+            for i in range(iterations, -1, -1):
+                key = f"{ic_label}_{i}"
+                query_key= f"{sc_label}_{i}"
+                ret_key= f"{rv_label}_{i}"
+                if key in d and isinstance(d[key], str):
+                    d["last_iter"] = i
+                    content = d[key]
+                    
+                    if ret_key in d:
+                        d["error"] = "generation"
+                        
+                    if query_key in d:
+                        d["error"] = "retrieval"
+                        break
+
+                    if negative_tag in content:
+                        if i == iterations:
+                            d["error"] = "info"
+                        else:
+                            d["error"] = "subquery"
+                        break
+                    
+                    match = re.search(info_pattern, content)
+                    if not match:
+                        d["error"] = "format"
+                    elif match.group(answer_group):
+                        d[f"multihop{iterations}"] = match.group(answer_group)
+                    else:
+                        d["error"] = "format"
+                    break  # stop after first valid key
+        return data
+    
+    def finalize_data_vod(self, data, iterations = 3):
+        positive_tag = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["positive_tag"]
+        negative_tag = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["negative_tag"]
+        info_pattern = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["pattern"]
+        answer_group = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["answer_group"]
+        
+        pr_label = Inferrer.dict_labels[Task.PROVIDE_ANSWER]
+        sc_label = Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]
+        rv_label = Inferrer.dict_labels[Task.RETRIEVE]
+        vd_label = Inferrer.dict_labels[Task.VERIFY_OR_DENY]
+
+        for d in data:
+            d["pr_calls"] = sum(1 for key in d if key.startswith(pr_label))
+            d["sc_calls"] = sum(1 for key in d if key.startswith(sc_label))
+            d["vd_calls"] = sum(1 for key in d if key.startswith(vd_label))
+            d["rv_calls"] = sum(1 for key in d if key.startswith(rv_label)) + 1
+            d["llm_calls"] = d["pr_calls"] + d["sc_calls"] + d["vd_calls"]
+            d[f"multihop{iterations}"] = ""
+            d["error"] = ""
+
+            if f"{pr_label}_{0}" not in d:
+                d["error"] = "llm_start"
+                continue
+            # check from iteration_max down to iteration_0
+            for i in range(iterations, -1, -1):
+                key = f"{pr_label}_{i}"
+                query_key= f"{sc_label}_{i}"
+                vod_key = f"{vd_label}_{i}"
+                ret_key= f"{rv_label}_{i}"
+                if key in d and isinstance(d[key], str):
+                    d["last_iter"] = i
+                    content = d[key]
+                    
+                    if ret_key in d:
+                        d["error"] = "generation"
+                        
+                    if query_key in d:
+                        d["error"] = "retrieval"
+                        break
+                    # TODO THIS IS WRONG
+                    if vod_key in d:
+                        d["error"] = "query_const"
+
+                    if negative_tag in content:
+                        if i == iterations:
+                            d["error"] = "info"
+                        else:
+                            d["error"] = "subquery"
+                        break
+                    
+                    match = re.search(info_pattern, content)
+                    if not match:
+                        d["error"] = "format"
+                    elif match.group(answer_group):
+                        d[f"multihop{iterations}"] = match.group(answer_group)
+                    else:
+                        d["error"] = "format"
+                    break  # stop after first valid key
+        return data
+    
+    def finalize_data_hist(self, data, iterations = 3):
+        positive_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["positive_tag"]
+        negative_tag = self.prompts_and_tools[Task.INFO_CHECK.value]["negative_tag"]
+        info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
+        answer_group = self.prompts_and_tools[Task.INFO_CHECK.value]["answer_group"]
+        
+        ic_label = Inferrer.dict_labels[Task.INFO_CHECK]
+        sc_label = Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT_WITH_HISTORY]
+        rv_label = Inferrer.dict_labels[Task.RETRIEVE]
+
+        for d in data:
+            d["ic_calls"] = sum(1 for key in d if key.startswith(ic_label))
+            d["sc_calls"] = sum(1 for key in d if key.startswith(sc_label))
+            d["rv_calls"] = sum(1 for key in d if key.startswith(rv_label)) + 1
+            d["llm_calls"] = d["ic_calls"] + d["sc_calls"]
+            d[f"multihop{iterations}"] = ""
+            d["error"] = ""
+
+            if f"{ic_label}_{0}" not in d:
+                d["error"] = "llm_start"
+                continue
+            # check from iteration_max down to iteration_0
+            for i in range(iterations, -1, -1):
+                key = f"{ic_label}_{i}"
+                query_key= f"{sc_label}_{i}"
+                ret_key= f"{rv_label}_{i}"
+                if key in d and isinstance(d[key], str):
+                    d["last_iter"] = i
+                    content = d[key]
+                    
+                    if ret_key in d:
+                        d["error"] = "generation"
+                        
+                    if query_key in d:
+                        d["error"] = "retrieval"
+                        break
+
+                    if negative_tag in content:
+                        if i == iterations:
+                            d["error"] = "info"
+                        else:
+                            d["error"] = "subquery"
+                        break
+                    
+                    match = re.search(info_pattern, content)
+                    if not match:
+                        d["error"] = "format"
+                    elif match.group(answer_group):
+                        d[f"multihop{iterations}"] = match.group(answer_group)
+                    else:
+                        d["error"] = "format"
+                    break  # stop after first valid key
+        return data
+    
+    #################################### generic main ####################################
+        
+    def finalize_data(self, task_list, data, iterations = 3):
+        pass
+    
+    def infer(self, task_list, data, start_iter=0):
+        # example:
+        # task_list = {
+        #     "before": [Task.RETRIEVE_INIT],
+        #     "main": [Task.INFO_CHECK, Task.SUBQUERY_CONSTRUCT, Task.RETRIEVE],
+        #     "after": [Task.INFO_CHECK]
+        # }
+        timer_start = time.time()
+        if start_iter == 0:
+            pass # TODO
+        iterations_processed = 0
+        for i in range(start_iter, self.config.iterations):
+            # TODO
+            iterations_processed += 1
+        data = None # TODO
+        data = self.finalize_data(data, self.config.iterations)
+        if self.config.remove_intermediate_steps:
+            data = utils.remove_intermediate_steps(data)
+        timer_end = time.time()
+        
+        elapsed_time = timer_end - timer_start
+        hours = int(elapsed_time // 3600)
+        minutes = int(elapsed_time % 3600 // 60)
+        seconds = int(elapsed_time % 60)
+        if self.config.calculate_time:
+            print(f"inference execution time: {hours}h {minutes}m {seconds}s")
+        return data
+    
     #################################### main ####################################
     
     def infer_basic(self, data, start_iter=0):
@@ -507,6 +654,55 @@ class Inferrer:
             iterations_processed += 1
         data = self.info_check_iter(data, self.config.iterations, prev_task_id=Task.RETRIEVE)
         data = self.finalize_data_basic(data, self.config.iterations)
+        if self.config.remove_intermediate_steps:
+            data = utils.remove_intermediate_steps(data)
+        timer_end = time.time()
+        
+        elapsed_time = timer_end - timer_start
+        hours = int(elapsed_time // 3600)
+        minutes = int(elapsed_time % 3600 // 60)
+        seconds = int(elapsed_time % 60)
+        if self.config.calculate_time:
+            print(f"inference execution time: {hours}h {minutes}m {seconds}s")
+        return data
+    
+    def infer_vod(self, data, start_iter=0):
+        timer_start = time.time()
+        if start_iter == 0:
+            data = self.retrieval_init(data)
+        iterations_processed = 0
+        for i in range(start_iter, self.config.iterations):
+            data = self.provide_answer_iter(data, i, prev_task_id=Task.RETRIEVE)
+            data = self.verify_or_deny_iter(data, i, prev_task_id=Task.PROVIDE_ANSWER)
+            data = self.subq_construct_iter(data, i, prev_task_id=Task.VERIFY_OR_DENY)
+            data = self.retrieval_iter(data, i, prev_task_id=Task.SUBQUERY_CONSTRUCT)
+            iterations_processed += 1
+        data = self.provide_answer_iter(data, self.config.iterations, prev_task_id=Task.RETRIEVE)
+        data = self.finalize_data_vod(data, self.config.iterations)
+        if self.config.remove_intermediate_steps:
+            data = utils.remove_intermediate_steps(data)
+        timer_end = time.time()
+        
+        elapsed_time = timer_end - timer_start
+        hours = int(elapsed_time // 3600)
+        minutes = int(elapsed_time % 3600 // 60)
+        seconds = int(elapsed_time % 60)
+        if self.config.calculate_time:
+            print(f"inference execution time: {hours}h {minutes}m {seconds}s")
+        return data
+    
+    def infer_hist(self, data, start_iter=0):
+        timer_start = time.time()
+        if start_iter == 0:
+            data = self.retrieval_init(data)
+        iterations_processed = 0
+        for i in range(start_iter, self.config.iterations):
+            data = self.info_check_iter(data, i, prev_task_id=Task.RETRIEVE)
+            data = self.subq_construct_history_iter(data, i, prev_task_id=Task.INFO_CHECK)
+            data = self.retrieval_iter(data, i, prev_task_id=Task.SUBQUERY_CONSTRUCT_WITH_HISTORY)
+            iterations_processed += 1
+        data = self.info_check_iter(data, self.config.iterations, prev_task_id=Task.RETRIEVE)
+        data = self.finalize_data_hist(data, self.config.iterations)
         if self.config.remove_intermediate_steps:
             data = utils.remove_intermediate_steps(data)
         timer_end = time.time()

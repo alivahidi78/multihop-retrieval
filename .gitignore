@@ -4,6 +4,7 @@ results/
 logs/
 unsloth_compiled_cache/
 wandb/
+archive/
 *.slurm
 *.ipynb
 

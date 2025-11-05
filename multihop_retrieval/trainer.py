@@ -493,6 +493,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
         return super()._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, pixel_values, image_grid_thw, pixel_attention_mask, image_sizes)
 
     def training_step(self, model, inputs, num_items_in_batch = None):
+        if self.unbundled_batching:
+            pass #TODO
         if self.low_vram:
             torch.cuda.empty_cache()
         return super().training_step(model, inputs, num_items_in_batch)
