@@ -7,6 +7,7 @@ from .utils import Task, method_task_id
 from .retrieval import Retriever
 from outlines.types import Regex
 from collections.abc import Mapping
+import traceback
 
 class InferrerConfig:
     def __init__(self, **kwargs): 
@@ -327,71 +328,82 @@ class Inferrer:
     #################################### internal ####################################
     
     def _call_llm(self, prompt, grammar = None, tools = None, skip_special_tokens=False, enable_thinking=False):
-        text = self.tokenizer.apply_chat_template(
-            prompt,
-            tools = tools,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking = enable_thinking)
-        
-        prompt_mask = None
-        
-        inputs = self.tokenizer(
-            text=text,
-            return_tensors="pt",
-            padding=True,
-            padding_side="left",
-            # add_special_tokens=False,
-        ).to(self.config.device)  
-        
-        inputs = self._prepare_inputs(inputs)
-        prompt_ids, prompt_mask = inputs["input_ids"], inputs["attention_mask"]
-        inputs = {}
-        inputs["input_ids"], inputs["attention_mask"] = prompt_ids, prompt_mask
-        
-        if grammar:
-            outlines_wrapped = OutlinesWrapper(self.model, self.tokenizer)
-            output_type = grammar
-            outputs = outlines_wrapped.generate(text, inputs, output_type=output_type, generation_config=self.config.generation_config)
-            
-        else:
-            outputs = self.model.generate(
-                **inputs,
-                generation_config = self.config.generation_config
-            )
-        
-        # Note: thinking is disabled for now
-        if(enable_thinking):
-            raise NotImplementedError("Thinking is currently disabled.")
-
-        output_ids = outputs[0]
-        full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=skip_special_tokens)
-
-        input_len = inputs["input_ids"].shape[-1]
-        generated_ids = outputs[0][input_len:]
-        prompt_ids = outputs[0][:input_len]
-
         try:
-            end_thinking_index = generated_ids.tolist().index(151668)
-            thought_ids = generated_ids[:end_thinking_index+1]
-            generated_ids = generated_ids[end_thinking_index+1:]
-            thought = self.tokenizer.decode(thought_ids, skip_special_tokens=skip_special_tokens)
-        except ValueError:
-            thought = None
-
-        completion = self.tokenizer.decode(generated_ids, skip_special_tokens=skip_special_tokens)
-        
-        if prompt_mask.dim() == 2: #FIXME
-            prompt_mask = prompt_mask.squeeze(0)
+            text = self.tokenizer.apply_chat_template(
+                prompt,
+                tools = tools,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking = enable_thinking)
             
-        return {
-            "prompt": prompt,
-            "prompt_mask": prompt_mask,
-            "prompt_ids": prompt_ids,
-            "thought_and_completion_ids": generated_ids,
-            "thought_decoded": thought,
-            "completion_decoded": completion,
-        }
+            prompt_mask = None
+            
+            inputs = self.tokenizer(
+                text=text,
+                return_tensors="pt",
+                padding=True,
+                padding_side="left",
+                # add_special_tokens=False,
+            ).to(self.config.device)  
+            
+            inputs = self._prepare_inputs(inputs)
+            prompt_ids, prompt_mask = inputs["input_ids"], inputs["attention_mask"]
+            inputs = {}
+            inputs["input_ids"], inputs["attention_mask"] = prompt_ids, prompt_mask
+            
+            if grammar:
+                outlines_wrapped = OutlinesWrapper(self.model, self.tokenizer)
+                output_type = grammar
+                outputs = outlines_wrapped.generate(text, inputs, output_type=output_type, generation_config=self.config.generation_config)
+                
+            else:
+                outputs = self.model.generate(
+                    **inputs,
+                    generation_config = self.config.generation_config
+                )
+            
+            # Note: thinking is disabled for now
+            if(enable_thinking):
+                raise NotImplementedError("Thinking is currently disabled.")
+
+            output_ids = outputs[0]
+            full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=skip_special_tokens)
+
+            input_len = inputs["input_ids"].shape[-1]
+            generated_ids = outputs[0][input_len:]
+            prompt_ids = outputs[0][:input_len]
+
+            try:
+                end_thinking_index = generated_ids.tolist().index(151668)
+                thought_ids = generated_ids[:end_thinking_index+1]
+                generated_ids = generated_ids[end_thinking_index+1:]
+                thought = self.tokenizer.decode(thought_ids, skip_special_tokens=skip_special_tokens)
+            except ValueError:
+                thought = None
+
+            completion = self.tokenizer.decode(generated_ids, skip_special_tokens=skip_special_tokens)
+            
+            if prompt_mask.dim() == 2: #FIXME
+                prompt_mask = prompt_mask.squeeze(0)
+                
+            return {
+                "prompt": prompt,
+                "prompt_mask": prompt_mask,
+                "prompt_ids": prompt_ids,
+                "thought_and_completion_ids": generated_ids,
+                "thought_decoded": thought,
+                "completion_decoded": completion,
+            }
+        except Exception as e:
+            traceback.print_exc()
+            return {
+                "prompt": "",
+                "prompt_mask": [],
+                "prompt_ids": [],
+                "thought_and_completion_ids": [],
+                "thought_decoded": "",
+                "completion_decoded": "",
+            }
     
     def _get_deduplicated_context(self, context, iteration, selected_datum=None):
         context = context.copy()
@@ -496,6 +508,7 @@ class Inferrer:
     def finalize_data_vod(self, data, iterations = 3):
         positive_tag = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["positive_tag"]
         negative_tag = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["negative_tag"]
+        negative_tag_vd = self.prompts_and_tools[Task.VERIFY_OR_DENY.value]["negative_tag"]
         info_pattern = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["pattern"]
         answer_group = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["answer_group"]
         
@@ -524,33 +537,40 @@ class Inferrer:
                 ret_key= f"{rv_label}_{i}"
                 if key in d and isinstance(d[key], str):
                     d["last_iter"] = i
-                    content = d[key]
                     
                     if ret_key in d:
                         d["error"] = "generation"
+                        break
                         
                     if query_key in d:
                         d["error"] = "retrieval"
                         break
-                    # TODO THIS IS WRONG
-                    if vod_key in d:
-                        d["error"] = "query_const"
+                    
+                    # if vod_key in d:
+                    #     d["error"] = "query_const"
+                    #     break
+                        
+                    if i == iterations and negative_tag in d[key]:
+                        d["error"] = "info"
+                        break
 
-                    if negative_tag in content:
-                        if i == iterations:
-                            d["error"] = "info"
-                        else:
-                            d["error"] = "subquery"
+                    if i< iterations and negative_tag_vd in d[vod_key]:
+                        d["error"] = "subquery"
                         break
                     
-                    match = re.search(info_pattern, content)
+                    match = re.search(info_pattern, d[key])
                     if not match:
                         d["error"] = "format"
+                        break
                     elif match.group(answer_group):
                         d[f"multihop{iterations}"] = match.group(answer_group)
+                        break
                     else:
                         d["error"] = "format"
+                        break
                     break  # stop after first valid key
+                if i == 0 and not d[f"multihop{iterations}"]:
+                    d["error"] = "unknown"
         return data
     
     def finalize_data_hist(self, data, iterations = 3):
