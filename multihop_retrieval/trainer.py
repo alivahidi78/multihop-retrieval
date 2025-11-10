@@ -18,13 +18,13 @@ from contextlib import nullcontext
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, low_vram=False):
+    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, no_cache=False):
         self.iterations = iterations
         self.retriever = retriever
         self.unbundled_batching = unbundled_batching
         self.prompts_and_tools = prompts_and_tools
         self.enforce_grammar = enforce_grammar
-        self.no_cache = low_vram
+        self.no_cache = no_cache
         
         if reward_funcs == None:
             reward_funcs = MultihopGRPOTrainer.get_default_reward_functions(self.prompts_and_tools)
@@ -313,6 +313,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
         rewards_unbundled = (rewards_unbundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
         # rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
+        ### TODO IMPORTANT This entire section is incorrect if more than 1 step is accumulated
+        ##########################################################################################
         # Compute grouped-wise rewards
         mean_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).mean(dim=1)
         std_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).std(dim=1)
@@ -324,7 +326,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         advantages = rewards_unbundled - mean_grouped_rewards
         if self.scale_rewards:
             advantages = advantages / (std_grouped_rewards + 1e-4)
-        
+        ###########################################################################################
         # Slice to keep only the local part of the data
         # Note: probably multiple process situation
         process_slice = slice(
@@ -444,7 +446,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
             if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
                 self.optimizer.train()
             inputs = self._prepare_inputs(inputs)
-            batch_size = self.unbundled_batching or 32
+            batch_size = self.unbundled_batching or 512
             total_items = 0
             total_loss = 0.0
             for i in range(0, len(inputs["prompt_ids"]), batch_size):
@@ -469,13 +471,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 if self.args.n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
-                # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
-                if (
-                    not self.model_accepts_loss_kwargs or num_items_in_batch is None
-                ) and self.compute_loss_func is None:
-                    # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
-                    loss = loss / self.current_gradient_accumulation_steps
-
                 ##################################################################
                 self.accelerator.backward(loss, **kwargs)
                 ##################################################################
@@ -484,4 +479,17 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 total_loss += sub_loss * sub_items
                 total_items += sub_items
             del inputs
-            return total_loss / total_items
+            loss = total_loss / total_items
+                            # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+            if (
+                not self.model_accepts_loss_kwargs or num_items_in_batch is None
+            ) and self.compute_loss_func is None:
+                # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
+                loss = loss / self.current_gradient_accumulation_steps
+            
+            return loss
+    
+    def _prepare_inputs(self, generation_batch):
+        inputs = self._generate_and_score_completions(generation_batch)
+        self._step += 1
+        return inputs
