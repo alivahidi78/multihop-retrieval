@@ -191,72 +191,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 raise NotImplementedError("vllm server mode is not currently supported.")
             elif self.vllm_mode == "colocate":
                 #TODO
-                if self.guided_decoding_regex:
-                    #TODO set if enforce_grammar is true
-                    guided_decoding = GuidedDecodingParams(regex=self.guided_decoding_regex)
-                else:
-                    guided_decoding = None
-
-                generation_kwargs = {
-                    "n": 1,  # vLLM on each GPU generates only 1 in colocate mode
-                    "repetition_penalty": self.repetition_penalty,
-                    "temperature": self.temperature,
-                    "top_p": self.top_p,
-                    "top_k": -1 if self.top_k is None else self.top_k,
-                    "min_p": 0.0 if self.min_p is None else self.min_p,
-                    "max_tokens": self.max_completion_length,
-                    "guided_decoding": guided_decoding,
-                    "logprobs": 0,  # only return the logprob of the generated token
-                }
-                if self.args.generation_kwargs is not None:
-                    generation_kwargs.update(self.args.generation_kwargs)
-                sampling_params = SamplingParams(**generation_kwargs)
-
-                if self.vllm_tensor_parallel_size > 1:
-                    # Gather prompts from all ranks in the TP group and flatten.
-                    # Each rank starts with its own prompts; after gathering, all ranks see the full group set.
-                    prompts_text = None #TODO
-                    orig_size = len(prompts_text)
-                    gathered_prompts = [None for _ in range(self.vllm_tensor_parallel_size)]
-                    torch.distributed.all_gather_object(gathered_prompts, prompts_text, group=self.tp_group)
-                    all_prompts_text = [p for sublist in gathered_prompts for p in sublist]
-
-                    all_images = None
-                else:
-                    all_prompts_text = prompts_text
-                    all_images = None
-
-                vllm_inputs = all_prompts_text
-
-                with profiling_context(self, "vLLM.generate"):
-                    all_outputs = self.llm.generate(vllm_inputs, sampling_params=sampling_params, use_tqdm=False)
-
-                completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
-                all_logprobs = [
-                    [next(iter(lp.values())).logprob for lp in output.logprobs]
-                    for outputs in all_outputs
-                    for output in outputs.outputs
-                ]
-
-                if self.vllm_tensor_parallel_size > 1:
-                    # Slice completions for this rank within its TP group.
-                    # Each rank generates all outputs — we keep only our share.
-                    local_rank_in_group = torch.distributed.get_rank(group=self.tp_group)
-                    tp_slice = slice(local_rank_in_group * orig_size, (local_rank_in_group + 1) * orig_size)
-                    completion_ids = completion_ids[tp_slice]
-                    all_logprobs = all_logprobs[tp_slice]
-
-                if self.args.vllm_enable_sleep_mode:
-                    self.llm.sleep(level=1)
-
-            # Pad the completions, and concatenate them with the prompts
-            completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
-            completion_ids = pad(completion_ids, padding_value=self.pad_token_id)
-            prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
-            sampling_per_token_logps = [
-                torch.tensor(logprobs, device=device, dtype=torch.float32) for logprobs in all_logprobs
-            ]
-            sampling_per_token_logps = pad(sampling_per_token_logps, padding_value=0.0)
+                raise NotImplementedError("vllm colocate mode is not currently supported.")
+                
         if self.use_transformers_paged:
             raise NotImplementedError("use_transformers_paged is not currently supported.")
         else:
@@ -501,19 +437,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         if self.no_cache:
             torch.cuda.empty_cache()
         
-        # if self.unbundled_batching:
-        #     total_items = 0
-        #     total_loss = 0.0
-            
-        #     for i in range(0, len(inputs), self.unbundled_batching):
-        #         sub_inputs = inputs[i:i+8]
-        #         sub_items = len(sub_inputs)
-        #         sub_loss = super().training_step(model, sub_inputs, sub_items)
-        #         # Make sure sub_loss is a scalar tensor
-        #         total_loss += sub_loss * sub_items
-        #         total_items += sub_items
-        #     return total_loss / total_items
-        
         cp_context, inputs = self._prepare_context_parallel_inputs(model, inputs)
         # Context manager is no-op if CP isn't enabled
         with cp_context():
@@ -521,31 +444,44 @@ class MultihopGRPOTrainer(GRPOTrainer):
             if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
                 self.optimizer.train()
             inputs = self._prepare_inputs(inputs)
+            batch_size = self.unbundled_batching or 32
+            total_items = 0
+            total_loss = 0.0
+            for i in range(0, len(inputs["prompt_ids"]), batch_size):
+                sub_inputs = {k: v[i:i+batch_size] for k, v in inputs.items() if k != "num_items_in_batch"}
+                sub_items = len(sub_inputs["prompt_ids"])
+                
+                #########################################################################
+                with self.compute_loss_context_manager():
+                    loss = self.compute_loss(model, sub_inputs, num_items_in_batch=sub_items)
+                #########################################################################
+                
+                if (
+                    self.args.torch_empty_cache_steps is not None
+                    and self.state.global_step % self.args.torch_empty_cache_steps == 0
+                ):
+                    torch.cuda.empty_cache()
+                kwargs = {}
+                # For LOMO optimizers you need to explicitly use the learning rate
+                if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+                    kwargs["learning_rate"] = self._get_learning_rate()
 
-            with self.compute_loss_context_manager():
-                loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+                if self.args.n_gpu > 1:
+                    loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
+                # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+                if (
+                    not self.model_accepts_loss_kwargs or num_items_in_batch is None
+                ) and self.compute_loss_func is None:
+                    # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
+                    loss = loss / self.current_gradient_accumulation_steps
+
+                ##################################################################
+                self.accelerator.backward(loss, **kwargs)
+                ##################################################################
+                
+                sub_loss = loss.detach()
+                total_loss += sub_loss * sub_items
+                total_items += sub_items
             del inputs
-            if (
-                self.args.torch_empty_cache_steps is not None
-                and self.state.global_step % self.args.torch_empty_cache_steps == 0
-            ):
-                torch.cuda.empty_cache()
-
-            kwargs = {}
-            # For LOMO optimizers you need to explicitly use the learning rate
-            if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
-                kwargs["learning_rate"] = self._get_learning_rate()
-
-            if self.args.n_gpu > 1:
-                loss = loss.mean()  # mean() to average on multi-gpu parallel training
-
-            # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
-            if (
-                not self.model_accepts_loss_kwargs or num_items_in_batch is None
-            ) and self.compute_loss_func is None:
-                # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
-                loss = loss / self.current_gradient_accumulation_steps
-
-            self.accelerator.backward(loss, **kwargs)
-            return loss.detach()
+            return total_loss / total_items
