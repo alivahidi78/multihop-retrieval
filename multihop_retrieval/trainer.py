@@ -1,6 +1,7 @@
 from multihop_retrieval.utils.inference import Inferrer, InferrerConfig
 from multihop_retrieval.utils import utils
 from multihop_retrieval.utils.utils import Task
+from transformers.training_args import OptimizerNames
 
 from trl import GRPOTrainer
 from trl.models import unwrap_model_for_generation
@@ -23,7 +24,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         self.unbundled_batching = unbundled_batching
         self.prompts_and_tools = prompts_and_tools
         self.enforce_grammar = enforce_grammar
-        self.low_vram = low_vram
+        self.no_cache = low_vram
         
         if reward_funcs == None:
             reward_funcs = MultihopGRPOTrainer.get_default_reward_functions(self.prompts_and_tools)
@@ -151,10 +152,14 @@ class MultihopGRPOTrainer(GRPOTrainer):
                             rewards[index] = -5
                         index += 1
                     elif(not enough and not malformed):
+                        # info check was not malformed and not enough
                         print("subq malformed")
                         rewards[index] = -5  
                     iteration += 1
-            return rewards    
+            return rewards
+        
+        def formatting_judge():
+            pass    
         
         return [compute_exact, compute_f1, info_decision_judge, subq_decision_judge]
         
@@ -493,8 +498,54 @@ class MultihopGRPOTrainer(GRPOTrainer):
         return super()._get_per_token_logps_and_entropies(model, input_ids, attention_mask, logits_to_keep, batch_size, compute_entropy, pixel_values, image_grid_thw, pixel_attention_mask, image_sizes)
 
     def training_step(self, model, inputs, num_items_in_batch = None):
-        if self.unbundled_batching:
-            pass #TODO
-        if self.low_vram:
+        if self.no_cache:
             torch.cuda.empty_cache()
-        return super().training_step(model, inputs, num_items_in_batch)
+        
+        # if self.unbundled_batching:
+        #     total_items = 0
+        #     total_loss = 0.0
+            
+        #     for i in range(0, len(inputs), self.unbundled_batching):
+        #         sub_inputs = inputs[i:i+8]
+        #         sub_items = len(sub_inputs)
+        #         sub_loss = super().training_step(model, sub_inputs, sub_items)
+        #         # Make sure sub_loss is a scalar tensor
+        #         total_loss += sub_loss * sub_items
+        #         total_items += sub_items
+        #     return total_loss / total_items
+        
+        cp_context, inputs = self._prepare_context_parallel_inputs(model, inputs)
+        # Context manager is no-op if CP isn't enabled
+        with cp_context():
+            model.train()
+            if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+                self.optimizer.train()
+            inputs = self._prepare_inputs(inputs)
+
+            with self.compute_loss_context_manager():
+                loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+            del inputs
+            if (
+                self.args.torch_empty_cache_steps is not None
+                and self.state.global_step % self.args.torch_empty_cache_steps == 0
+            ):
+                torch.cuda.empty_cache()
+
+            kwargs = {}
+            # For LOMO optimizers you need to explicitly use the learning rate
+            if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+                kwargs["learning_rate"] = self._get_learning_rate()
+
+            if self.args.n_gpu > 1:
+                loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+            # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+            if (
+                not self.model_accepts_loss_kwargs or num_items_in_batch is None
+            ) and self.compute_loss_func is None:
+                # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
+                loss = loss / self.current_gradient_accumulation_steps
+
+            self.accelerator.backward(loss, **kwargs)
+            return loss.detach()

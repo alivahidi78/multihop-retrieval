@@ -155,3 +155,10 @@ def information_judgement(prompts_and_tools, response, task_id):
     print(f"Response malformed: {response}")
     # enough, malformed
     return False, True
+
+def format_judgement(prompts_and_tools, response, task_id):
+    pattern = prompts_and_tools[task_id.value]["pattern"]
+    match = re.search(pattern, response) 
+    if match:
+        return True
+    return False

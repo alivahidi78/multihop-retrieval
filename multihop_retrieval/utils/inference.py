@@ -105,8 +105,6 @@ class Inferrer:
     
     @method_task_id(Task.INFO_CHECK)    
     def info_check_iter(self, data, iteration, prev_task_id, task_id=None):
-        prompt_list = []
-        response_list = []
         col_name = f"{Inferrer.dict_labels[task_id]}_{iteration}"
         for i in tqdm(range(0, len(data), 1), disable = not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
             selected = data[i]
@@ -121,7 +119,6 @@ class Inferrer:
             tools = utils.get_tools(self.prompts_and_tools, task_id)
             context_str = utils.context_to_string(context)
             prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context_str)
-            prompt_list.append(prompt)
 
             grammar = None
             if self.config.enforce_grammar:
@@ -130,8 +127,12 @@ class Inferrer:
             #TODO batch this
             llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
             
+            if llm_res["error"]:
+                if "call_error" not in data[i].keys():
+                    data[i]["call_error"] = []
+                data[i]["call_error"].append(f"{Inferrer.dict_labels[task_id]}_{iteration}")
+                
             predicted_m = llm_res["completion_decoded"]
-            response_list.append(predicted_m)
 
             if self.config.add_onehop and iteration==0:
                 predicted_o = self._one_hop(query, context)
@@ -206,6 +207,12 @@ class Inferrer:
                 
                 #TODO batch this
                 llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
+                
+                if llm_res["error"]:
+                    if "call_error" not in data[i].keys():
+                        data[i]["call_error"] = []
+                    data[i]["call_error"].append(f"{Inferrer.dict_labels[task_id]}_{iteration}")
+
                 predicted_m = llm_res["completion_decoded"]
 
                 try:
@@ -245,6 +252,12 @@ class Inferrer:
             
             #TODO batch this
             llm_res = self._call_llm(prompt, grammar=grammar, tools=tools)
+            
+            if llm_res["error"]:
+                if "call_error" not in data[i].keys():
+                    data[i]["call_error"] = []
+                data[i]["call_error"].append(f"{Inferrer.dict_labels[task_id]}_{iteration}")
+                
             llm_output = llm_res["completion_decoded"]
             pattern = subq_json["pattern"]
             regex_groups = subq_json["regex_groups"]
@@ -305,6 +318,12 @@ class Inferrer:
             
             #TODO batch this
             llm_res = self._call_llm(prompt, grammar=grammar, tools=tools)
+            
+            if llm_res["error"]:
+                if "call_error" not in data[i].keys():
+                    data[i]["call_error"] = []
+                data[i]["call_error"].append(f"{Inferrer.dict_labels[task_id]}_{iteration}")
+                
             llm_output = llm_res["completion_decoded"]
             pattern = subqh_json["pattern"]
             regex_groups = subqh_json["regex_groups"]
@@ -393,6 +412,7 @@ class Inferrer:
                 "thought_and_completion_ids": generated_ids,
                 "thought_decoded": thought,
                 "completion_decoded": completion,
+                "error": False
             }
         except Exception as e:
             traceback.print_exc()
@@ -403,6 +423,7 @@ class Inferrer:
                 "thought_and_completion_ids": [],
                 "thought_decoded": "",
                 "completion_decoded": "",
+                "error": True
             }
     
     def _get_deduplicated_context(self, context, iteration, selected_datum=None):
