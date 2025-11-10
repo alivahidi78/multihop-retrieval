@@ -8,7 +8,7 @@ from trl.models import unwrap_model_for_generation
 from trl.trainer.grpo_trainer import nanstd
 from trl.data_utils import is_conversational
 from trl.extras.profiling import profiling_context
-from trl.trainer.utils import pad
+from trl.trainer.utils import pad, shuffle_sequence_dict
 
 from accelerate.utils import gather_object
 import copy, json, os
@@ -490,6 +490,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
             return loss
     
     def _prepare_inputs(self, generation_batch):
+        mode = "train" if self.model.training else "eval"
         inputs = self._generate_and_score_completions(generation_batch)
-        self._step += 1
+        if mode == "train":
+            inputs = shuffle_sequence_dict(inputs)
+            self._step += 1
         return inputs
