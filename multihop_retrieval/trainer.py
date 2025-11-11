@@ -12,6 +12,7 @@ from trl.trainer.utils import pad, shuffle_sequence_dict
 import traceback
 
 from accelerate.utils import gather_object
+from itertools import accumulate
 import copy, json, os
 import torch
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -19,7 +20,7 @@ from contextlib import nullcontext
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, no_cache=False):
+    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, no_cache=False, inference_mode="basic"):
         self.current_gradient_accumulation_steps = args.gradient_accumulation_steps
         self.iterations = iterations
         self.retriever = retriever
@@ -27,6 +28,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         self.prompts_and_tools = prompts_and_tools
         self.enforce_grammar = enforce_grammar
         self.no_cache = no_cache
+        self.inference_mode = inference_mode
         
         if reward_funcs == None:
             reward_funcs = MultihopGRPOTrainer.get_default_reward_functions(self.prompts_and_tools)
@@ -83,7 +85,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                             if all(supported_ret):
                                 rewards[index] = 1
                             elif True in supported_ret:
-                                rewards[index] = 0.5
+                                rewards[index] = 0
                         else:
                             if all(supported_ret):
                                 rewards[index] = -1
@@ -184,7 +186,14 @@ class MultihopGRPOTrainer(GRPOTrainer):
             ):  
                 inferrer_config = InferrerConfig(generation_config = self.generation_config, iterations = self.iterations, enforce_grammar = self.enforce_grammar)
                 inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools, inferrer_config = inferrer_config, no_cache=self.no_cache)
-                data = inferrer.infer_basic(data)
+                if self.inference_mode == "basic":
+                    data = inferrer.infer_basic(data)
+                elif self.inference_mode == "hist":
+                    data = inferrer.infer_hist(data)
+                elif self.inference_mode == "vod":
+                    data = inferrer.infer_vod(data)
+                else:
+                    raise ValueError(f"inference mode {self.inference_mode} is unknown.")
         
         final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]
@@ -290,20 +299,37 @@ class MultihopGRPOTrainer(GRPOTrainer):
         rewards_unbundled = (rewards_unbundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
         # rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
-        ### TODO IMPORTANT This entire section is incorrect if more than 1 step is accumulated
+        ### This entire section is incorrect if more than 1 step is accumulated
+        ### Also it is incorrect since we use averages of all llm-calls
         ##########################################################################################
         # Compute grouped-wise rewards
-        mean_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).mean(dim=1)
-        std_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).std(dim=1)
+        # mean_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).mean(dim=1)
+        # std_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).std(dim=1)
+        # is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
+        
+        # # Normalize the rewards to compute the advantages
+        # mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(sum(bundle_lengths), dim=0)
+        # std_grouped_rewards = std_grouped_rewards.repeat_interleave(sum(bundle_lengths), dim=0)
+        # advantages = rewards_unbundled - mean_grouped_rewards
+        # if self.scale_rewards:
+        #     advantages = advantages / (std_grouped_rewards + 1e-4)
+        ###########################################################################################
+        indices = [0] + list(accumulate(bundle_lengths))
+        mean_bundle_rewards = torch.tensor([rewards_unbundled[indices[i]:indices[i+1]].mean() for i in range(len(bundle_lengths))], device="cuda")
+        mean_grouped_rewards = mean_bundle_rewards.view(-1, self.num_generations).mean(dim=1)
+        std_grouped_rewards = mean_bundle_rewards.view(-1, self.num_generations).std(dim=1)
         is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
-
         # Normalize the rewards to compute the advantages
-        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(sum(bundle_lengths), dim=0)
-        std_grouped_rewards = std_grouped_rewards.repeat_interleave(sum(bundle_lengths), dim=0)
-        advantages = rewards_unbundled - mean_grouped_rewards
+        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+        std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
+        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
+        std_grouped_rewards = std_grouped_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
+        
+        mean_bundle_rewards_repeated = mean_bundle_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
+        advantages = mean_bundle_rewards_repeated - mean_grouped_rewards
         if self.scale_rewards:
             advantages = advantages / (std_grouped_rewards + 1e-4)
-        ###########################################################################################
+        
         # Slice to keep only the local part of the data
         # Note: probably multiple process situation
         process_slice = slice(
@@ -312,7 +338,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         )
         all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
         advantages = advantages[process_slice]
-
+        
         # Log the metrics
         if mode == "train":
             self.state.num_input_tokens_seen += self.accelerator.gather(attention_mask.sum()).sum().item()
