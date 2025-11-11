@@ -45,11 +45,12 @@ class Inferrer:
         Task.SUBQUERY_CONSTRUCT_WITH_HISTORY: "step_quh" # variation of subq_construct
     }
     
-    def __init__(self, retriever, model, tokenizer, prompts_and_tools, inferrer_config=None):
+    def __init__(self, retriever, model, tokenizer, prompts_and_tools, inferrer_config=None, no_cache=False):
         self.retriever = retriever
         self.model = model
         self.tokenizer = tokenizer
         self.prompts_and_tools = prompts_and_tools
+        self.no_cache = no_cache
         self.config = inferrer_config if inferrer_config else InferrerConfig()
     
     @classmethod    
@@ -357,13 +358,20 @@ class Inferrer:
             
             prompt_mask = None
             
-            inputs = self.tokenizer(
-                text=text,
-                return_tensors="pt",
-                padding=True,
-                padding_side="left",
-                # add_special_tokens=False,
-            ).to(self.config.device)  
+            try:
+                text = text.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
+                inputs = self.tokenizer(
+                    text=text,
+                    return_tensors="pt",
+                    padding=True,
+                    padding_side="left",
+                    # add_special_tokens=False,
+                ).to(self.config.device)  
+            except Exception as e:
+                print(prompt)
+                print(tools)
+                print(text)
+                raise e
             
             inputs = self._prepare_inputs(inputs)
             prompt_ids, prompt_mask = inputs["input_ids"], inputs["attention_mask"]
@@ -373,12 +381,12 @@ class Inferrer:
             if grammar:
                 outlines_wrapped = OutlinesWrapper(self.model, self.tokenizer)
                 output_type = grammar
-                outputs = outlines_wrapped.generate(text, inputs, output_type=output_type, generation_config=self.config.generation_config)
+                outputs = outlines_wrapped.generate(text, inputs, output_type=output_type, generation_config=self.config.generation_config, disable_compile=True)
                 
             else:
                 outputs = self.model.generate(
                     **inputs,
-                    generation_config = self.config.generation_config
+                    generation_config = self.config.generation_config, disable_compile=True
                 )
             
             # Note: thinking is disabled for now
@@ -689,6 +697,8 @@ class Inferrer:
             data = self.retrieval_init(data)
         iterations_processed = 0
         for i in range(start_iter, self.config.iterations):
+            if self.no_cache:
+                torch.cuda.empty_cache()
             data = self.info_check_iter(data, i, prev_task_id=Task.RETRIEVE)
             data = self.subq_construct_iter(data, i, prev_task_id=Task.INFO_CHECK)
             data = self.retrieval_iter(data, i, prev_task_id=Task.SUBQUERY_CONSTRUCT)
@@ -723,7 +733,6 @@ class Inferrer:
         if self.config.remove_intermediate_steps:
             data = utils.remove_intermediate_steps(data)
         timer_end = time.time()
-        
         elapsed_time = timer_end - timer_start
         hours = int(elapsed_time // 3600)
         minutes = int(elapsed_time % 3600 // 60)

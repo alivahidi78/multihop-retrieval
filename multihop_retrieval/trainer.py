@@ -20,6 +20,7 @@ from contextlib import nullcontext
 class MultihopGRPOTrainer(GRPOTrainer):
     
     def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, no_cache=False):
+        self.current_gradient_accumulation_steps = args.gradient_accumulation_steps
         self.iterations = iterations
         self.retriever = retriever
         self.unbundled_batching = unbundled_batching
@@ -119,7 +120,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 FSDP.summon_full_params(self.model_wrapped, recurse=False) if self.is_fsdp_enabled else nullcontext(),
             ):  
                 inferrer_config = InferrerConfig(generation_config = self.generation_config, iterations = self.iterations, enforce_grammar = self.enforce_grammar)
-                inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools, inferrer_config = inferrer_config)
+                inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools, inferrer_config = inferrer_config, no_cache=self.no_cache)
                 data = inferrer.infer_basic(data)
         
         final_answers = [d[f"multihop{self.iterations}"] for d in data]
@@ -352,60 +353,71 @@ class MultihopGRPOTrainer(GRPOTrainer):
         if self.no_cache:
             torch.cuda.empty_cache()
             
-        try:
-            cp_context, inputs = self._prepare_context_parallel_inputs(model, inputs)
-            # Context manager is no-op if CP isn't enabled
-            with cp_context():
-                model.train()
-                if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
-                    self.optimizer.train()
+        
+        cp_context, inputs = self._prepare_context_parallel_inputs(model, inputs)
+        # Context manager is no-op if CP isn't enabled
+        with cp_context():
+            model.train()
+            if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+                self.optimizer.train()
+            try:
                 inputs = self._prepare_inputs(inputs)
-                batch_size = self.unbundled_batching or 512
-                total_items = 0
-                total_loss = 0.0
-                for i in range(0, len(inputs["prompt_ids"]), batch_size):
-                    sub_inputs = {k: v[i:i+batch_size] for k, v in inputs.items() if k != "num_items_in_batch"}
-                    sub_items = len(sub_inputs["prompt_ids"])
-                    
-                    #########################################################################
-                    with self.compute_loss_context_manager():
-                        loss = self.compute_loss(model, sub_inputs, num_items_in_batch=sub_items)
-                    #########################################################################
-                    
-                    if (
-                        self.args.torch_empty_cache_steps is not None
-                        and self.state.global_step % self.args.torch_empty_cache_steps == 0
-                    ):
-                        torch.cuda.empty_cache()
-                    kwargs = {}
-                    # For LOMO optimizers you need to explicitly use the learning rate
-                    if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
-                        kwargs["learning_rate"] = self._get_learning_rate()
-
-                    if self.args.n_gpu > 1:
-                        loss = loss.mean()  # mean() to average on multi-gpu parallel training
-
-                    ##################################################################
-                    self.accelerator.backward(loss, **kwargs)
-                    ##################################################################
-                    
-                    sub_loss = loss.detach()
-                    total_loss += sub_loss * sub_items
-                    total_items += sub_items
-                del inputs
-                loss = total_loss / total_items
-                                # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
-                if (
-                    not self.model_accepts_loss_kwargs or num_items_in_batch is None
-                ) and self.compute_loss_func is None:
-                    # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
-                    loss = loss / self.current_gradient_accumulation_steps
-                
+            except Exception as e:
+                loss = torch.tensor(0.0, device="cuda")
+                kwargs = {}
+                if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+                    kwargs["learning_rate"] = self._get_learning_rate()
+                if self.args.n_gpu > 1:
+                    loss = loss.mean() 
+                self.accelerator.backward(loss, **kwargs)
+                traceback.print_exc()
                 return loss
-        except Exception as e:
-            print("training_step skipped")
-            traceback.print_exc()
-            return torch.tensor(0)
+                
+            batch_size = self.unbundled_batching or 512
+            total_items = 0
+            total_loss = 0.0
+            for i in range(0, len(inputs["prompt_ids"]), batch_size):
+                sub_inputs = {k: v[i:i+batch_size] for k, v in inputs.items() if k != "num_items_in_batch"}
+                sub_items = len(sub_inputs["prompt_ids"])
+                
+                #########################################################################
+                with self.compute_loss_context_manager():
+                    loss = self.compute_loss(model, sub_inputs, num_items_in_batch=sub_items)
+                #########################################################################
+                
+                if (
+                    self.args.torch_empty_cache_steps is not None
+                    and self.state.global_step % self.args.torch_empty_cache_steps == 0
+                ):
+                    torch.cuda.empty_cache()
+                kwargs = {}
+                # For LOMO optimizers you need to explicitly use the learning rate
+                if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+                    kwargs["learning_rate"] = self._get_learning_rate()
+
+                if self.args.n_gpu > 1:
+                    loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+                ##################################################################
+                self.accelerator.backward(loss, **kwargs)
+                ##################################################################
+                
+                sub_loss = loss.detach()
+                total_loss += sub_loss * sub_items
+                total_items += sub_items
+            del inputs
+            loss = total_loss / total_items
+                            # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+            if (
+                not self.model_accepts_loss_kwargs or num_items_in_batch is None
+            ) and self.compute_loss_func is None:
+                # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
+                loss = loss / self.current_gradient_accumulation_steps
+            
+            return loss
+    
+    def _inner_training_loop(self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None):
+        return super()._inner_training_loop(batch_size, args, resume_from_checkpoint, trial, ignore_keys_for_eval)
     
     def _prepare_inputs(self, generation_batch):
         mode = "train" if self.model.training else "eval"
