@@ -9,6 +9,7 @@ from trl.trainer.grpo_trainer import nanstd
 from trl.data_utils import is_conversational
 from trl.extras.profiling import profiling_context
 from trl.trainer.utils import pad, shuffle_sequence_dict
+import traceback
 
 from accelerate.utils import gather_object
 import copy, json, os
@@ -58,53 +59,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
             index = 0
             for d in data:
                 iteration = 0
-                while(f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}" in d.keys()):
-                    supporting_facts = d["supporting_facts"]
-                    context = d["context"]
-                    if not (iteration == 0):
-                        try:
-                            for k in range(0, iteration):
-                                context = context.copy()
-                                context.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
-                        except KeyError:
-                            print("info key error")
-                    supported_ret = [False]*len(supporting_facts)
-                    for i, f in enumerate(supporting_facts):
-                        for j, c in enumerate(context):
-                            if(f[0] == c[0]):
-                                supported_ret[i] = True
-                                
-                    response = d[f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}"]
-                    enough, malformed = utils.information_judgement(prompts_and_tools, response, Task.INFO_CHECK)
-                    if malformed:
-                       rewards[index] = -5 
-                    elif enough:  
-                        if all(supported_ret):
-                            if exact_rew[index] == 1:
-                                rewards[index] = 5
-                            elif f1_rew[index] >= 0.5:
-                                rewards[index] = 1
-                        elif (True in supported_ret):
-                            if exact_rew[index] == 1:
-                                rewards[index] = 5
-                            elif f1_rew[index] >= 0.5:
-                                rewards[index] = 1
-                        else:
-                            rewards[index] = -5
-                    else:
-                        # information_not_sufficient
-                        if all(supported_ret):
-                            rewards[index] = -5
-                        elif (True in supported_ret):
-                            pass
-                        else:
-                            rewards[index] = 5
-                            
-                    index += 1
-                    
-                    if f"{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}_{iteration}" in d.keys():
-                        index += 1
-                    iteration += 1
             return rewards
         
         def subq_decision_judge(data, final_answers, bundle_lengths, **kwargs):
@@ -115,47 +69,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
             index = 0
             for d in data:
                 iteration = 0
-                ic_label = f"{Inferrer.dict_labels[Task.INFO_CHECK]}_{iteration}"
-                while(ic_label in d.keys()):
-                    index += 1 
-                    enough, malformed = utils.information_judgement(prompts_and_tools, d[ic_label], Task.INFO_CHECK)
-                    
-                    if f"{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}_{iteration}" in d.keys():
-                        supporting_facts = d["supporting_facts"]
-                        context = d["context"]
-                        for k in range(0, iteration):
-                            context = context.copy()
-                            context.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
-                        supported_ret = [False]*len(supporting_facts)
-                        for i, f in enumerate(supporting_facts):
-                            for j, c in enumerate(context):
-                                if(f[0] == c[0]):
-                                    supported_ret[i] = True  
-                        try:
-                            new_supported_ret = [False]*len(supporting_facts)
-                            new_ret = d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{iteration}"]
-                            for i, f in enumerate(supporting_facts):
-                                for j, c in enumerate(new_ret):
-                                    if(f[0] == c[0]):
-                                        new_supported_ret[i] = True  
-                                        
-                            if all([a or b for a, b in zip(supported_ret, new_supported_ret)]):
-                                rewards[index] = 2
-                            elif all(new_supported_ret):
-                                rewards[index] = 3  
-                            elif (True in [b and (not a) for a, b in zip(supported_ret, new_supported_ret)]):
-                                rewards[index] = 1
-                            else:
-                                rewards[index] = -1
-                        except KeyError:
-                            print("subq key error")
-                            rewards[index] = -5
-                        index += 1
-                    elif(not enough and not malformed):
-                        # info check was not malformed and not enough
-                        print("subq malformed")
-                        rewards[index] = -5  
-                    iteration += 1
             return rewards
         
         def formatting_judge():
@@ -438,56 +351,61 @@ class MultihopGRPOTrainer(GRPOTrainer):
     def training_step(self, model, inputs, num_items_in_batch = None):
         if self.no_cache:
             torch.cuda.empty_cache()
-        
-        cp_context, inputs = self._prepare_context_parallel_inputs(model, inputs)
-        # Context manager is no-op if CP isn't enabled
-        with cp_context():
-            model.train()
-            if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
-                self.optimizer.train()
-            inputs = self._prepare_inputs(inputs)
-            batch_size = self.unbundled_batching or 512
-            total_items = 0
-            total_loss = 0.0
-            for i in range(0, len(inputs["prompt_ids"]), batch_size):
-                sub_inputs = {k: v[i:i+batch_size] for k, v in inputs.items() if k != "num_items_in_batch"}
-                sub_items = len(sub_inputs["prompt_ids"])
-                
-                #########################################################################
-                with self.compute_loss_context_manager():
-                    loss = self.compute_loss(model, sub_inputs, num_items_in_batch=sub_items)
-                #########################################################################
-                
-                if (
-                    self.args.torch_empty_cache_steps is not None
-                    and self.state.global_step % self.args.torch_empty_cache_steps == 0
-                ):
-                    torch.cuda.empty_cache()
-                kwargs = {}
-                # For LOMO optimizers you need to explicitly use the learning rate
-                if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
-                    kwargs["learning_rate"] = self._get_learning_rate()
-
-                if self.args.n_gpu > 1:
-                    loss = loss.mean()  # mean() to average on multi-gpu parallel training
-
-                ##################################################################
-                self.accelerator.backward(loss, **kwargs)
-                ##################################################################
-                
-                sub_loss = loss.detach()
-                total_loss += sub_loss * sub_items
-                total_items += sub_items
-            del inputs
-            loss = total_loss / total_items
-                            # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
-            if (
-                not self.model_accepts_loss_kwargs or num_items_in_batch is None
-            ) and self.compute_loss_func is None:
-                # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
-                loss = loss / self.current_gradient_accumulation_steps
             
-            return loss
+        try:
+            cp_context, inputs = self._prepare_context_parallel_inputs(model, inputs)
+            # Context manager is no-op if CP isn't enabled
+            with cp_context():
+                model.train()
+                if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+                    self.optimizer.train()
+                inputs = self._prepare_inputs(inputs)
+                batch_size = self.unbundled_batching or 512
+                total_items = 0
+                total_loss = 0.0
+                for i in range(0, len(inputs["prompt_ids"]), batch_size):
+                    sub_inputs = {k: v[i:i+batch_size] for k, v in inputs.items() if k != "num_items_in_batch"}
+                    sub_items = len(sub_inputs["prompt_ids"])
+                    
+                    #########################################################################
+                    with self.compute_loss_context_manager():
+                        loss = self.compute_loss(model, sub_inputs, num_items_in_batch=sub_items)
+                    #########################################################################
+                    
+                    if (
+                        self.args.torch_empty_cache_steps is not None
+                        and self.state.global_step % self.args.torch_empty_cache_steps == 0
+                    ):
+                        torch.cuda.empty_cache()
+                    kwargs = {}
+                    # For LOMO optimizers you need to explicitly use the learning rate
+                    if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+                        kwargs["learning_rate"] = self._get_learning_rate()
+
+                    if self.args.n_gpu > 1:
+                        loss = loss.mean()  # mean() to average on multi-gpu parallel training
+
+                    ##################################################################
+                    self.accelerator.backward(loss, **kwargs)
+                    ##################################################################
+                    
+                    sub_loss = loss.detach()
+                    total_loss += sub_loss * sub_items
+                    total_items += sub_items
+                del inputs
+                loss = total_loss / total_items
+                                # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+                if (
+                    not self.model_accepts_loss_kwargs or num_items_in_batch is None
+                ) and self.compute_loss_func is None:
+                    # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient accumulation steps
+                    loss = loss / self.current_gradient_accumulation_steps
+                
+                return loss
+        except Exception as e:
+            print("training_step skipped")
+            traceback.print_exc()
+            return torch.tensor(0)
     
     def _prepare_inputs(self, generation_batch):
         mode = "train" if self.model.training else "eval"
