@@ -53,27 +53,90 @@ class MultihopGRPOTrainer(GRPOTrainer):
             return rewards
         
         def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):
-            exact_rew = compute_exact(data, final_answers, bundle_lengths, **kwargs)
-            f1_rew = compute_f1(data, final_answers, bundle_lengths, **kwargs)
-            rewards = [0]*len(exact_rew)
+            rewards = [0]*sum(bundle_lengths)
             golden_answers = [example["answer"] for example in data]
             index = 0
             for d in data:
-                iteration = 0
+                supporting_facts = d["supporting_facts"]
+                context = d["context"]
+                prompts = d["prompt"]
+                completions = d["completion_decoded"]
+                for j in range(3):
+                    ic_label = f"{j}_{Inferrer.dict_labels[Task.INFO_CHECK]}"
+                    sc_label = f"{j}_{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}"
+                    if ic_label in prompts.keys():
+                        enough, malformed = utils.information_judgement(prompts_and_tools, completions[ic_label], Task.INFO_CHECK)
+                        context = context.copy()
+                        for k in range(0, j):
+                            try:
+                                context.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
+                            except:
+                                print("missing retrieval")
+                        supported_ret = [False]*len(supporting_facts)
+                        for x, f in enumerate(supporting_facts):
+                            for c in context:
+                                if(f[0] == c[0]):
+                                    supported_ret[x] = True
+                        if malformed:
+                            rewards[index] = -1
+                        elif enough:
+                            if all(supported_ret):
+                                rewards[index] = 1
+                            elif True in supported_ret:
+                                rewards[index] = 0.5
+                        else:
+                            if all(supported_ret):
+                                rewards[index] = -1
+                            elif True in supported_ret:
+                                rewards[index] = 0          
+                        index += 1
+                    if sc_label in prompts.keys():
+                        rewards[index] = 0  
+                        index += 1     
             return rewards
         
         def subq_decision_judge(data, final_answers, bundle_lengths, **kwargs):
-            exact_rew = compute_exact(data, final_answers, bundle_lengths, **kwargs)
-            f1_rew = compute_f1(data, final_answers, bundle_lengths, **kwargs)
-            rewards = [0]* len(f1_rew)
-            golden_answers = [example["answer"] for example in data]
+            rewards = [0]*sum(bundle_lengths)
             index = 0
             for d in data:
-                iteration = 0
-            return rewards
-        
-        def formatting_judge():
-            pass    
+                supporting_facts = d["supporting_facts"]
+                context = d["context"].copy()
+                prompts = d["prompt"]
+                completions = d["completion_decoded"]
+                retrievals = {}
+                for k in range(0, 3):
+                    try:
+                        retrievals.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
+                    except:
+                        pass
+                for j in range(3):
+                    ic_label = f"{j}_{Inferrer.dict_labels[Task.INFO_CHECK]}"
+                    sc_label = f"{j}_{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}"
+                    if ic_label in prompts.keys():
+                        rewards[index] = 0     
+                        index += 1
+                    if sc_label in prompts.keys():
+                        proper = utils.format_judgement(prompts_and_tools, completions[sc_label], Task.SUBQUERY_CONSTRUCT)
+                        if not proper:
+                            rewards[index] = -1
+                        else:
+                            context_supported_ret = [False]*len(supporting_facts)
+                            new_supported_ret = [False]*len(supporting_facts)
+                            for x, f in enumerate(supporting_facts):
+                                for c in context:
+                                    if(f[0] == c[0]):
+                                        context_supported_ret[x] = True
+                                for r in retrievals:
+                                    if(f[0] == r[0]):
+                                        new_supported_ret[x] = True
+                            if all([a or b for a, b in zip(context_supported_ret, new_supported_ret)]):
+                                rewards[index] = 1
+                            elif (True in [(not a) and b for a, b in zip(context_supported_ret, new_supported_ret)]):
+                                rewards[index] = 0.5
+                            else:
+                                rewards[index] = -1
+                        index += 1     
+            return rewards 
         
         return [compute_exact, compute_f1, info_decision_judge, subq_decision_judge]
         
