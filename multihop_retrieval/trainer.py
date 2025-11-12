@@ -86,11 +86,16 @@ class MultihopGRPOTrainer(GRPOTrainer):
                                 rewards[index] = 1
                             elif True in supported_ret:
                                 rewards[index] = 0
+                            else:
+                                rewards[index] = -1
                         else:
                             if all(supported_ret):
                                 rewards[index] = -1
                             elif True in supported_ret:
-                                rewards[index] = 0          
+                                rewards[index] = 0
+                            else:
+                                rewards[index] = 1.5
+                            
                         index += 1
                     if sc_label in prompts.keys():
                         rewards[index] = 0  
@@ -137,6 +142,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                                 rewards[index] = 0.5
                             else:
                                 rewards[index] = -1
+                        rewards[index] += 1
                         index += 1     
             return rewards 
         
@@ -322,13 +328,13 @@ class MultihopGRPOTrainer(GRPOTrainer):
         # Normalize the rewards to compute the advantages
         mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
         std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
-        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
-        std_grouped_rewards = std_grouped_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
+        mean_bundle_grouped_rewards = mean_grouped_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
+        std_bundle_grouped_rewards = std_grouped_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
         
         mean_bundle_rewards_repeated = mean_bundle_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
-        advantages = mean_bundle_rewards_repeated - mean_grouped_rewards
+        advantages = mean_bundle_rewards_repeated - mean_bundle_grouped_rewards
         if self.scale_rewards:
-            advantages = advantages / (std_grouped_rewards + 1e-4)
+            advantages = advantages / (std_bundle_grouped_rewards + 1e-4)
         
         # Slice to keep only the local part of the data
         # Note: probably multiple process situation
@@ -348,13 +354,26 @@ class MultihopGRPOTrainer(GRPOTrainer):
         # was applied (non-NaN values)
         # Note: We average unbundled rewards for this
         for i, reward_func_name in enumerate(self.reward_func_names):
+            
             mean_rewards = torch.nanmean(rewards_unbundled_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}/mean"].append(mean_rewards)
+            
+            indices = [0] + list(accumulate(bundle_lengths))
+            bundled_mean_rewards = torch.tensor([rewards_unbundled_func[indices[j]:indices[j+1], i].mean() for j in range(len(bundle_lengths))], device=rewards_unbundled_func.device)
+            logged_mean = torch.nanmean(bundled_mean_rewards).item()
+            self._metrics[mode][f"rewards/{reward_func_name}/bundled_mean"].append(logged_mean)
+            
             std_rewards = nanstd(rewards_unbundled_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}/std"].append(std_rewards)
+            
+            logged_std = nanstd(bundled_mean_rewards).item()
+            self._metrics[mode][f"rewards/{reward_func_name}/bundled_std"].append(logged_std)
+            
         self._metrics[mode]["generation_count"].append(sum(bundle_lengths) / len(bundle_lengths))
-        self._metrics[mode]["reward"].append(mean_grouped_rewards.mean().item())
-        self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
+        self._metrics[mode]["reward"].append(mean_bundle_grouped_rewards.mean().item())
+        self._metrics[mode]["reward_bundled"].append(mean_grouped_rewards.mean().item())
+        self._metrics[mode]["reward_std"].append(std_bundle_grouped_rewards.mean().item())
+        self._metrics[mode]["reward_std_bundled"].append(std_grouped_rewards.mean().item())
         self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())
 
         # Log prompt and completion texts
