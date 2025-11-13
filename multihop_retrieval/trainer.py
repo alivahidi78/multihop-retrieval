@@ -72,7 +72,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                         for k in range(0, j):
                             try:
                                 context.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
-                            except:
+                            except KeyError:
                                 print("missing retrieval")
                         supported_ret = [False]*len(supporting_facts)
                         for x, f in enumerate(supporting_facts):
@@ -110,11 +110,11 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 context = d["context"].copy()
                 prompts = d["prompt"]
                 completions = d["completion_decoded"]
-                retrievals = {}
+                retrievals = []
                 for k in range(0, 3):
                     try:
                         retrievals.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
-                    except:
+                    except KeyError:
                         pass
                 for j in range(3):
                     ic_label = f"{j}_{Inferrer.dict_labels[Task.INFO_CHECK]}"
@@ -141,7 +141,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
                             elif (True in [(not a) and b for a, b in zip(context_supported_ret, new_supported_ret)]):
                                 rewards[index] = 0.5
                             else:
-                                rewards[index] = -1
+                                # rewards[index] = -1
+                                pass
                         # rewards[index] += 1
                         index += 1     
             return rewards 
