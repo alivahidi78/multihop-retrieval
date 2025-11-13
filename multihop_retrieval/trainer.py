@@ -136,13 +136,13 @@ class MultihopGRPOTrainer(GRPOTrainer):
                                 for r in retrievals:
                                     if(f[0] == r[0]):
                                         new_supported_ret[x] = True
-                            if all([a or b for a, b in zip(context_supported_ret, new_supported_ret)]):
+                            if all([not(a) and b for a, b in zip(context_supported_ret, new_supported_ret)]):
                                 rewards[index] = 1
                             elif (True in [(not a) and b for a, b in zip(context_supported_ret, new_supported_ret)]):
                                 rewards[index] = 0.5
                             else:
                                 rewards[index] = -1
-                        rewards[index] += 1
+                        # rewards[index] += 1
                         index += 1     
             return rewards 
         
@@ -331,19 +331,20 @@ class MultihopGRPOTrainer(GRPOTrainer):
         mean_bundle_grouped_rewards = mean_grouped_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
         std_bundle_grouped_rewards = std_grouped_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
         
-        mean_bundle_rewards_repeated = mean_bundle_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
-        advantages = mean_bundle_rewards_repeated - mean_bundle_grouped_rewards
+        # mean_bundle_rewards_repeated = mean_bundle_rewards.repeat_interleave(torch.tensor(bundle_lengths, device="cuda"), dim=0)
+        # advantages = mean_bundle_rewards_repeated - mean_bundle_grouped_rewards
+        advantages = rewards_unbundled - mean_bundle_grouped_rewards
         if self.scale_rewards:
-            advantages = advantages / (std_bundle_grouped_rewards + 1e-4)
+            advantages = advantages / (std_bundle_grouped_rewards + 1e-6)
         
         # Slice to keep only the local part of the data
         # Note: probably multiple process situation
-        process_slice = slice(
-            self.accelerator.process_index * len(prompts),
-            (self.accelerator.process_index + 1) * len(prompts),
-        )
-        all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
-        advantages = advantages[process_slice]
+        # process_slice = slice(
+        #     self.accelerator.process_index * len(prompts),
+        #     (self.accelerator.process_index + 1) * len(prompts),
+        # )
+        # all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
+        # advantages = advantages[process_slice]
         
         # Log the metrics
         if mode == "train":
@@ -383,7 +384,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
         self._logs["completion"].extend(gather_object(completions_bundled))
         for i, name in enumerate(self.reward_func_names):
             self._logs["rewards"][name].extend(rewards_unbundled_func[:, i].tolist())
-        self._logs["advantages"].extend(all_process_advantages.tolist())
+        self._logs["advantages"].extend(advantages.tolist())
 
         output = {
             "prompt_ids": prompt_ids,
