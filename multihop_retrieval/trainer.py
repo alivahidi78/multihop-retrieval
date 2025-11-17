@@ -213,9 +213,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
         #     advantages = advantages / (std_grouped_rewards + 1e-4)
         ###########################################################################################
         indices = [0] + list(accumulate(bundle_lengths))
-        mean_bundle_rewards = torch.tensor([rewards_unbundled[indices[i]:indices[i+1]].mean() for i in range(len(bundle_lengths))], device="cuda")
-        mean_grouped_rewards = mean_bundle_rewards.view(-1, self.num_generations).mean(dim=1)
-        std_grouped_rewards = mean_bundle_rewards.view(-1, self.num_generations).std(dim=1)
+        bundled_rewards_mean = torch.tensor([rewards_unbundled[indices[i]:indices[i+1]].mean() for i in range(len(bundle_lengths))], device="cuda")
+        mean_grouped_rewards = bundled_rewards_mean.view(-1, self.num_generations).mean(dim=1)
+        std_grouped_rewards = bundled_rewards_mean.view(-1, self.num_generations).std(dim=1)
         is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
         # Normalize the rewards to compute the advantages
         mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)

@@ -5,15 +5,13 @@ from multihop_retrieval.utils.inference_utils import InferrerConfig, Inferrer
 from multihop_retrieval.utils.retrieval_utils import Retriever
 from transformers import GenerationConfig
 
-def run_inference(all_data, output_dir, method, end, start=0, step=50, use_tdqm=True, remove_tensors=False):
+def run_inference_and_save(all_data, output_dir, method, end, start=0, step=50, use_tdqm=True):
     start_idx = step * start
     end_idx = start_idx + step
     for i in tqdm(range(start, end), desc="chunk processed", disable=use_tdqm):
         try:
             eval_set = copy.deepcopy(all_data[start_idx:end_idx])
             inferred_data = method(eval_set)
-            if remove_tensors:
-                inferred_data = utils.remove_tensors(inferred_data)
             with open(os.path.join(f"{output_dir}", f"test_data_{i + 1}.json"), "w") as f:
                 json.dump(inferred_data, f)
         except Exception as e:
@@ -50,7 +48,7 @@ def infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, re
                         top_k=None,
                         top_p=None,
                         temperature=0.6,)
-        inf_config = InferrerConfig(use_tqdm=False, logs=False, iterations=2, remove_intermediate_steps=False, add_onehop=add_onehop, generation_config=generation_config)
+        inf_config = InferrerConfig(use_tqdm=False, logs=False, iterations=2, remove_tensors=True, add_onehop=add_onehop, generation_config=generation_config)
         inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
         save_path = os.path.join(output_dir, ckpt_name)
         os.makedirs(save_path, exist_ok=True)
@@ -64,7 +62,7 @@ def infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, re
             infer_func = inferrer.infer_vod_hist
         else:
             raise ValueError(f"inference mode {method} is unknown.")
-        run_inference(all_data, save_path, infer_func, end, start=start, step=step, remove_tensors=True)
+        run_inference_and_save(all_data, save_path, infer_func, end, start=start, step=step)
 
         # Unload adapter to save VRAM
         model.delete_adapter(f"adapter_checkpoint")

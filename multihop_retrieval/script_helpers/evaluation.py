@@ -52,7 +52,7 @@ def evaluate(all_data, prompts_and_tools, reward_functions, min_llm=1, include_o
     def g_index(data):
         name = data["level"]
         return ["easy", "medium", "hard"].index(name)
-    final_answers = [d[f"multihop{2}"] for d in all_data]
+    final_answers = [d[f"multihop{iterations}"] for d in all_data]
     llm_calls =  [d[f"llm_calls"] for d in all_data]
     sc_calls = [d[f"sc_calls"] for d in all_data]
     if include_onehop:
@@ -126,7 +126,8 @@ def evaluate(all_data, prompts_and_tools, reward_functions, min_llm=1, include_o
             })
     return results    
 
-def assess_checkpoint_data(checkpoints_dir, numbers, prompts_and_tools):
+def assess_checkpoint_data(checkpoints_dir, numbers, prompts_and_tools, iterations=2):
+    #TODO iterations not used
     results = []
     for number in numbers:
         all_data = load_data(os.path.join(checkpoints_dir, f"./checkpoint-{number}"))
