@@ -1,6 +1,6 @@
-from multihop_retrieval.utils.inference import Inferrer, InferrerConfig
-from multihop_retrieval.utils import utils
-from multihop_retrieval.utils.utils import Task
+from multihop_retrieval.utils.inference_utils import Inferrer, InferrerConfig
+from multihop_retrieval.utils import generic_utils as utils
+from multihop_retrieval.utils.generic_utils import Task
 from transformers.training_args import OptimizerNames
 
 from trl import GRPOTrainer
@@ -20,7 +20,7 @@ from contextlib import nullcontext
 
 class MultihopGRPOTrainer(GRPOTrainer):
     
-    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 3, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, no_cache=False, inference_mode="basic"):
+    def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 2, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, no_cache=False, inference_mode="basic"):
         self.current_gradient_accumulation_steps = args.gradient_accumulation_steps
         self.iterations = iterations
         self.retriever = retriever
@@ -53,101 +53,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 bundled_rewards[i] = utils.compute_f1(golden_answers[i], a)
             rewards = [row for row, n in zip(bundled_rewards, bundle_lengths) for _ in range(n)]
             return rewards
-        
-        def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):
-            rewards = [0]*sum(bundle_lengths)
-            golden_answers = [example["answer"] for example in data]
-            index = 0
-            for d in data:
-                supporting_facts = d["supporting_facts"]
-                context = d["context"]
-                prompts = d["prompt"]
-                completions = d["completion_decoded"]
-                for j in range(3):
-                    ic_label = f"{j}_{Inferrer.dict_labels[Task.INFO_CHECK]}"
-                    sc_label = f"{j}_{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}"
-                    if ic_label in prompts.keys():
-                        enough, malformed = utils.information_judgement(prompts_and_tools, completions[ic_label], Task.INFO_CHECK)
-                        context = context.copy()
-                        for k in range(0, j):
-                            try:
-                                context.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
-                            except KeyError:
-                                print("missing retrieval")
-                        supported_ret = [False]*len(supporting_facts)
-                        for x, f in enumerate(supporting_facts):
-                            for c in context:
-                                if(f[0] == c[0]):
-                                    supported_ret[x] = True
-                        if malformed:
-                            rewards[index] = -1
-                        elif enough:
-                            if all(supported_ret):
-                                rewards[index] = 1
-                            elif True in supported_ret:
-                                rewards[index] = 0
-                            else:
-                                rewards[index] = -1
-                        else:
-                            if all(supported_ret):
-                                rewards[index] = -1
-                            elif True in supported_ret:
-                                rewards[index] = 0
-                            else:
-                                rewards[index] = 1.5
-                            
-                        index += 1
-                    if sc_label in prompts.keys():
-                        rewards[index] = 0  
-                        index += 1     
-            return rewards
-        
-        def subq_decision_judge(data, final_answers, bundle_lengths, **kwargs):
-            rewards = [0]*sum(bundle_lengths)
-            index = 0
-            for d in data:
-                supporting_facts = d["supporting_facts"]
-                context = d["context"].copy()
-                prompts = d["prompt"]
-                completions = d["completion_decoded"]
-                retrievals = []
-                for k in range(0, 3):
-                    try:
-                        retrievals.extend(d[f"{Inferrer.dict_labels[Task.RETRIEVE]}_{k}"])
-                    except KeyError:
-                        pass
-                for j in range(3):
-                    ic_label = f"{j}_{Inferrer.dict_labels[Task.INFO_CHECK]}"
-                    sc_label = f"{j}_{Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT]}"
-                    if ic_label in prompts.keys():
-                        rewards[index] = 0     
-                        index += 1
-                    if sc_label in prompts.keys():
-                        proper = utils.format_judgement(prompts_and_tools, completions[sc_label], Task.SUBQUERY_CONSTRUCT)
-                        if not proper:
-                            rewards[index] = -1
-                        else:
-                            context_supported_ret = [False]*len(supporting_facts)
-                            new_supported_ret = [False]*len(supporting_facts)
-                            for x, f in enumerate(supporting_facts):
-                                for c in context:
-                                    if(f[0] == c[0]):
-                                        context_supported_ret[x] = True
-                                for r in retrievals:
-                                    if(f[0] == r[0]):
-                                        new_supported_ret[x] = True
-                            if all([not(a) and b for a, b in zip(context_supported_ret, new_supported_ret)]):
-                                rewards[index] = 1
-                            elif (True in [(not a) and b for a, b in zip(context_supported_ret, new_supported_ret)]):
-                                rewards[index] = 0.5
-                            else:
-                                # rewards[index] = -1
-                                pass
-                        # rewards[index] += 1
-                        index += 1     
-            return rewards 
-        
-        return [compute_exact, compute_f1, info_decision_judge, subq_decision_judge]
+        return [compute_exact, compute_f1]
         
     #Overridden
     def _generate_and_score_completions(self, inputs):
@@ -159,30 +65,13 @@ class MultihopGRPOTrainer(GRPOTrainer):
         data = copy.deepcopy(inputs)
         
         if self.use_vllm:
-            from vllm import LLM, SamplingParams
-            from vllm.sampling_params import GuidedDecodingParams
-            # raise NotImplementedError("use_vllm is not currently supported.")
-            if self.vllm_mode == "colocate" and self.args.vllm_enable_sleep_mode:
-                # wake up colocated vLLM instances if needed
-                torch.cuda.empty_cache()  # required to avoid OOM in some cases
-                self.llm.wake_up()
-
-            # First, update the vLLM weights if needed
-            if self.state.global_step != self._last_loaded_step:
-                self._move_model_to_vllm()
-                self._last_loaded_step = self.state.global_step
-
-            # Generate completions using vLLM: gather all prompts and use them in a single call in the main process
-            if self.vllm_mode == "server":
-                raise NotImplementedError("vllm server mode is not currently supported.")
-            elif self.vllm_mode == "colocate":
-                #TODO
-                raise NotImplementedError("vllm colocate mode is not currently supported.")
+            raise NotImplementedError("use_vllm is not currently supported.")
                 
         if self.use_transformers_paged:
+            
             raise NotImplementedError("use_transformers_paged is not currently supported.")
         else:
-        # Context transplated from GRPOTrainer
+            # Context transplated from GRPOTrainer
             with(
                 profiling_context(self, "transformers.generate"),
                 unwrap_model_for_generation(
@@ -340,15 +229,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         if self.scale_rewards:
             advantages = advantages / (std_bundle_grouped_rewards + 1e-6)
         
-        # Slice to keep only the local part of the data
-        # Note: probably multiple process situation
-        # process_slice = slice(
-        #     self.accelerator.process_index * len(prompts),
-        #     (self.accelerator.process_index + 1) * len(prompts),
-        # )
-        # all_process_advantages = advantages.clone()  # keep the aggregated advantages for logging
-        # advantages = advantages[process_slice]
-        
         # Log the metrics
         if mode == "train":
             self.state.num_input_tokens_seen += self.accelerator.gather(attention_mask.sum()).sum().item()
@@ -412,12 +292,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
         device = self.accelerator.device
         rewards_per_func = torch.zeros(sum(bundle_lengths), len(self.reward_funcs), device=device)
 
-        # # Repeat all input columns (but "prompt", "completion", and "completion_ids") to match the num of generations
-        # keys = [key for key in inputs[0] if key not in ["prompt", "completion", "completion_ids"]]
-        # reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
-
-        # This allows for dynamic reward shaping based on training progress.
         reward_kwargs = {}
+        # This allows for dynamic reward shaping based on training progress.
         reward_kwargs["trainer_state"] = self.state
 
         for i, (reward_func, reward_processing_class, reward_func_name) in enumerate(
@@ -463,8 +339,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
 
     def training_step(self, model, inputs, num_items_in_batch = None):
         if self.no_cache:
-            torch.cuda.empty_cache()
-            
+            torch.cuda.empty_cache()  
         
         cp_context, inputs = self._prepare_context_parallel_inputs(model, inputs)
         # Context manager is no-op if CP isn't enabled

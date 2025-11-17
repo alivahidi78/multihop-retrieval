@@ -1,10 +1,10 @@
 import torch, re, json, time, os
 from tqdm import tqdm
 from transformers.generation.configuration_utils import GenerationConfig
-from multihop_retrieval.utils import utils
+from multihop_retrieval.utils import generic_utils as utils
 from multihop_retrieval.utils.outlines_transformers import OutlinesWrapper
-from .utils import Task, method_task_id
-from .retrieval import Retriever
+from .generic_utils import Task, method_task_id
+from .retrieval_utils import Retriever
 from outlines.types import Regex
 from collections.abc import Mapping
 import traceback
@@ -19,7 +19,7 @@ class InferrerConfig:
                     top_p=None,
                     temperature=None,),
             "enforce_grammar": True,
-            "iterations": 3,
+            "iterations": 2,
             "use_tqdm": False,
             "logs": False,
             "add_onehop": False,
@@ -619,7 +619,7 @@ class Inferrer:
             d["sc_calls"] = sum(1 for key in d if key.startswith(sc_label))
             d["vd_calls"] = sum(1 for key in d if key.startswith(vd_label))
             d["rv_calls"] = sum(1 for key in d if key.startswith(rv_label)) + 1
-            d["llm_calls"] = d["pr_calls"] + d["sc_calls"] + d["vd_calls"]
+            d["llm_calls"] = d["pr_calls"] + d["sc_calls"] + d["vd_calls"] #TODO wrong
             d[f"multihop{iterations}"] = ""
             d["error"] = ""
 

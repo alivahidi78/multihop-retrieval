@@ -152,7 +152,7 @@ def information_judgement(prompts_and_tools, response, task_id):
             return True, False
         elif negative_tag in match.group(tag_group):
             return False, False
-    print(f"Response malformed: {response}")
+    # print(f"Response malformed: {response}")
     # enough, malformed
     return False, True
 
