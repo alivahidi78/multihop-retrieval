@@ -139,5 +139,6 @@ if __name__ == "__main__":
         except:
             print("missing", i)
     result = assess_data(all_data, 0, reward_functions=get_reward_functions(prompts_and_tools))
-    df = pd.DataFrame(result)
-    df.to_csv("../data/inf_/4_vodh/summary.csv")
+    print(result)
+    # df = pd.DataFrame(result)
+    # df.to_csv("../data/inf_/4_vodh/summary.csv")

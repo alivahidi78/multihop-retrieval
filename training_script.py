@@ -14,13 +14,14 @@ import torch
 from dotenv import load_dotenv
 load_dotenv()
 MODEL = "unsloth/Qwen3-4B"
-OUTPUT_PATH = "./results/test"
+OUTPUT_PATH = "./results/test-2"
+TOOLS_PATH = "./multihop_retrieval/tools/var_4.json"
 BASE_PATH = os.getenv("BASE_PATH")
 EMBEDDER = os.getenv("EMBEDDER")
 EMBEDDING_DIR = os.path.join(BASE_PATH, os.getenv("EMBEDDING_DIR"))
 WIKI_PATH = os.path.join(BASE_PATH, os.getenv("WIKI_PATH"))
 DATA_PATH = os.path.join(BASE_PATH, os.getenv("DATA_PATH"))
-TOOLS_PATH = os.path.join(BASE_PATH, os.getenv("TOOLS_PATH"))
+RUN_NAME = "exp-5 (vod-hist test2 - 4B)"
 
 def get_reward_functions(prompts_and_tools):
     def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):
@@ -35,18 +36,18 @@ def get_reward_functions(prompts_and_tools):
                 pr_label = Inferrer.task_label(Task.PROVIDE_ANSWER, j)
                 vod_label = Inferrer.task_label(Task.VERIFY_OR_DENY, j)
                 sc_label = Inferrer.task_label(Task.SUBQUERY_CONSTRUCT_WITH_HISTORY, j)
-                context = original_context.copy()
-                for k in range(0, j):
-                    try:
-                        context.extend(d[Inferrer.task_label(Task.RETRIEVE, k)])
-                    except KeyError:
-                        print("missing retrieval")
-                supported_ret = [False]*len(supporting_facts)
-                for x, f in enumerate(supporting_facts):
-                    for c in context:
-                        if(f[0] == c[0]):
-                            supported_ret[x] = True
                 if pr_label in prompts.keys():
+                    context = original_context.copy()
+                    for k in range(0, j):
+                        try:
+                            context.extend(d[Inferrer.task_label(Task.RETRIEVE, k)])
+                        except KeyError:
+                            print("missing retrieval")
+                    supported_ret = [False]*len(supporting_facts)
+                    for x, f in enumerate(supporting_facts):
+                        for c in context:
+                            if(f[0] == c[0]):
+                                supported_ret[x] = True
                     enough, malformed = utils.information_judgement(prompts_and_tools, completions[pr_label], Task.PROVIDE_ANSWER)
                     if malformed:
                         rewards[index] = -5 
@@ -98,7 +99,7 @@ def get_reward_functions(prompts_and_tools):
             context = d["context"].copy()
             prompts = d["prompt"]
             completions = d["completion_decoded"]
-            retrievals = {}
+            retrievals = []
             for k in range(0, 3):
                 try:
                     retrievals.extend(d[Inferrer.task_label(Task.RETRIEVE, k)])
@@ -150,12 +151,11 @@ if __name__ == "__main__":
     iterations = 2
     epochs = 1
     
-    run_name = "exp-5 (vod-hist test - 4B)"
     WANDB_KEY = os.getenv("WANDB_KEY")
     wandb.login(key=WANDB_KEY)
     wandb.init(
         project="huggingface",
-        name=run_name,
+        name=RUN_NAME,
     )
     
     print("Current working directory: ", os.getcwd())
@@ -235,7 +235,7 @@ if __name__ == "__main__":
         # eval_steps=200,
         # eval_strategy="steps",
         report_to="wandb",
-        run_name=run_name,
+        run_name=RUN_NAME,
         torch_empty_cache_steps = 1,
         reward_weights=[5, 3, 3, 3],
         temperature=1.0,

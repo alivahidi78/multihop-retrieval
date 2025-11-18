@@ -17,8 +17,8 @@ EMBEDDING_DIR = "../data/minilm-embedded"
 WIKI_PATH = "../"
 DATA_PATH = "../data"
 MODEL = "unsloth/Qwen3-4B"
-TOOLS_PATH = "./tools/var_3.json"
-OUTPUT_PATH = "../data/inf_/4_vodh"
+TOOLS_PATH = "./tools/var_4.json"
+OUTPUT_PATH = "../data/inf_/4_vodh_v4"
 
 if __name__ == "__main__":
     model, tokenizer = unsloth.FastLanguageModel.from_pretrained(
