@@ -2,7 +2,7 @@
 # CUDA==12.6
 # jupyter
 # ipywidgets
-torch --index-url https://download.pytorch.org/whl/cu128
+torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 trl==0.23.0
 transformers==4.56.1
 numpy==2.0.2
@@ -11,5 +11,5 @@ sentence_transformers==5.1.0
 peft==0.17.1
 accelerate==1.10.1
 outlines==1.2.5
-unsloth==2025.11.2 
-unsloth-zoo==2025.11.3
+# unsloth==2025.11.2 
+# unsloth-zoo==2025.11.3

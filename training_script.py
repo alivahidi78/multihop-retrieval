@@ -201,7 +201,7 @@ if __name__ == "__main__":
         lora_dropout = 0, # Supports any, but = 0 is optimized
         bias = "none",    # Supports any, but = "none" is optimized
         # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-        use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
+        use_gradient_checkpointing = False, # True or "unsloth" for very long context
         use_rslora = False,  # We support rank stabilized LoRA
         loftq_config = None, # And LoftQ
     )

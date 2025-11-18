@@ -530,7 +530,7 @@ class Inferrer:
                 ret_key= f"{rv_label}_{i}"
                 if vod_key in d:
                     d["last_iter"] = i
-                    enough, malformed = utils.information_judgement(self.prompts_and_tools, d["completion_decoded"][vod_key], Task.VERIFY_OR_DENY)
+                    enough, malformed = utils.information_judgement(self.prompts_and_tools, d[vod_key], Task.VERIFY_OR_DENY)
                     if malformed and i==iterations:
                         d["error"] = "vod"
                     elif ret_key in d:
