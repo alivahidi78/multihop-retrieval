@@ -127,7 +127,7 @@ def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=
             })
     return results   
 
-def assess_data(all_data, prompts_and_tools, index, reward_functions, iterations=2):
+def assess_data(all_data, index, reward_functions, iterations=2):
     #TODO iterations not used
     res = evaluate(all_data, reward_functions)
     res.update({
@@ -142,11 +142,11 @@ def assess_data(all_data, prompts_and_tools, index, reward_functions, iterations
     return res
      
 
-def assess_checkpoint_data(checkpoints_dir, numbers, prompts_and_tools, iterations=2):
+def assess_checkpoint_data(checkpoints_dir, numbers, reward_functions, iterations=2):
     results = []
     for number in numbers:
         file_path = os.path.join(checkpoints_dir, f"./checkpoint-{number}")
         all_data = load_data(file_path)
-        res = assess_data(all_data, prompts_and_tools, number, iterations)
+        res = assess_data(all_data, number, reward_functions, iterations)
         results.append(res)
     return results
