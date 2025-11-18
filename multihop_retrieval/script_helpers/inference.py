@@ -1,6 +1,6 @@
 from tqdm import tqdm
 import os, copy, json, traceback, re, time, torch
-from multihop_retrieval.utils import utils
+from multihop_retrieval.utils import generic_utils as utils
 from multihop_retrieval.utils.inference_utils import InferrerConfig, Inferrer
 from multihop_retrieval.utils.retrieval_utils import Retriever
 from transformers import GenerationConfig

@@ -151,13 +151,11 @@ class Inferrer:
 
             if self.config.add_onehop and iteration==0:
                 predicted_o = self._one_hop(query, context)
-            try:
-                data[i][col_name] = predicted_m
-                data = self._append_llm_res(data, llm_res, i, iteration, task_id)
-                if self.config.add_onehop and iteration==0:
-                    data[i]["onehop"] = predicted_o
-            except Exception as e:
-                print(f"exception at {i}")
+
+            data[i][col_name] = predicted_m
+            data = self._append_llm_res(data, llm_res, i, iteration, task_id)
+            if self.config.add_onehop and iteration==0:
+                data[i]["onehop"] = predicted_o
         return data
     
     ### short_answer ###
@@ -221,7 +219,7 @@ class Inferrer:
                     grammar = Regex(self.prompts_and_tools[task_id.value]["pattern"])
                 
                 #TODO batch this
-                llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
+                llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=True)
                 
                 if llm_res["error"]:
                     if "call_error" not in data[i].keys():
@@ -230,11 +228,9 @@ class Inferrer:
 
                 predicted_m = llm_res["completion_decoded"]
 
-                try:
-                    data[i][col_name] = predicted_m
-                    data = self._append_llm_res(data, llm_res, i, iteration, task_id)
-                except Exception as e:
-                    print(f"exception at {i}")
+                data[i][col_name] = predicted_m
+                data = self._append_llm_res(data, llm_res, i, iteration, task_id)
+
         return data
                 
     
@@ -290,6 +286,7 @@ class Inferrer:
             try:
                 data[i][Inferrer.task_label(task_id, iteration)] = subqueries
             except Exception as e:
+                traceback.print_exc()
                 print(f"exception at {i}")
         return data
     
@@ -356,6 +353,7 @@ class Inferrer:
             try:
                 data[i][Inferrer.task_label(task_id, iteration)] = subqueries
             except Exception as e:
+                traceback.print_exc()
                 print(f"exception at {i}")
         return data
     
@@ -530,30 +528,31 @@ class Inferrer:
                 query_key= f"{sc_label}_{i}"
                 vod_key = f"{vd_label}_{i}"
                 ret_key= f"{rv_label}_{i}"
-                if pr_key in d and isinstance(d[pr_key], str):
+                if vod_key in d:
                     d["last_iter"] = i
-                    if ret_key in d:
+                    enough, malformed = utils.information_judgement(self.prompts_and_tools, d["completion_decoded"][vod_key], Task.VERIFY_OR_DENY)
+                    if malformed and i==iterations:
+                        d["error"] = "vod"
+                    elif ret_key in d:
                         d["error"] = "generation"  
                     elif query_key in d:
                         d["error"] = "retrieval"
-                    elif vod_key in d:
+                    elif query_key in d["prompt"] and query_key not in d:
                         d["error"] = "subquery"
-                    elif i < iterations:
-                        d["error"] = "vod"
-                    else:
-                        enough, malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
-                        if malformed:
+                    elif i == iterations and not enough:
+                        d["error"] = "info"
+                    elif enough:
+                        p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
+                        if p_malformed:
                             d["error"] = "format"
-                        elif i == iterations and not enough:
-                            d["error"] = "info"
-                        elif enough:
+                        else:
                             match = re.search(info_pattern, d[pr_key])
                             if match.group(answer_group):
                                 d[f"multihop{iterations}"] = match.group(answer_group)
                             else:
                                 d["error"] = "format"
-                        else:
-                            d["error"] = "unknown"
+                    elif not enough:
+                        d["error"] = "subquery"
                     break
                 if i == 0 and not d[f"multihop{iterations}"]:
                     d["error"] = "unknown"    
@@ -563,7 +562,7 @@ class Inferrer:
         
     def finalize_data(self, data, iterations = 2):
         for d in data:
-            d["llm_calls"] = len(d["prompts"])
+            d["llm_calls"] = len(d["prompt"])
         return data
     
     def infer(self, task_list, data, start_iter=0, finalize_method=None):
@@ -576,8 +575,12 @@ class Inferrer:
         timer_start = time.time()
         
         if start_iter == 0:
-            for task in task_list["before"]:
-                data = self.task_func(task)(data, -1, None)
+            for idx, task in enumerate(task_list["before"]):
+                if idx == 0:
+                    prev_task_id=None
+                else: 
+                    prev_task_id=task_list["before"][idx-1]
+                data = self.task_func(task)(data, -1, prev_task_id)
                 
         iterations_processed = 0
         for i in range(start_iter, self.config.iterations):
@@ -587,8 +590,12 @@ class Inferrer:
                 data = self.task_func(task)(data, i, prev_task_id=task_list["main"][idx-1])
             iterations_processed += 1
         
-        for task in task_list["after"]:
-            data = self.task_func(task)(data, self.config.iterations, prev_task_id=task["main"][-1])
+        for idx, task in enumerate(task_list["after"]):
+            if idx == 0:
+                prev_task_id=task_list["main"][-1]
+            else: 
+                prev_task_id=task_list["after"][idx-1]
+            data = self.task_func(task)(data, self.config.iterations, prev_task_id)
         if finalize_method:
             data = finalize_method(data, self.config.iterations)
         else:    
@@ -621,7 +628,7 @@ class Inferrer:
         task_list = {
             "before": [Task.RETRIEVE_INIT],
             "main": [Task.PROVIDE_ANSWER, Task.VERIFY_OR_DENY, Task.SUBQUERY_CONSTRUCT, Task.RETRIEVE],
-            "after" : [Task.PROVIDE_ANSWER]
+            "after" : [Task.PROVIDE_ANSWER, Task.VERIFY_OR_DENY]
             }
         return self.infer(task_list, data, start_iter=start_iter, finalize_method=self.finalize_data_vod)
     
@@ -637,7 +644,7 @@ class Inferrer:
         task_list = {
             "before": [Task.RETRIEVE_INIT],
             "main": [Task.PROVIDE_ANSWER, Task.VERIFY_OR_DENY, Task.SUBQUERY_CONSTRUCT_WITH_HISTORY, Task.RETRIEVE],
-            "after" : [Task.PROVIDE_ANSWER]
+            "after" : [Task.PROVIDE_ANSWER, Task.VERIFY_OR_DENY]
             }
         return self.infer(task_list, data, start_iter=start_iter, finalize_method=self.finalize_data_vod_hist)
     

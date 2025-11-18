@@ -47,8 +47,9 @@ def check_retrieval_matches(all_data, context_labels, discard_label = None):
         "no_match": unmatched_items/total_items
     }
     
-def evaluate(all_data, prompts_and_tools, reward_functions, min_llm=1, include_onehop=False, limit=1000, iterations=2):
-    all_data = all_data[:limit]
+def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=None, iterations=2):
+    if limit:
+        all_data = all_data[:limit]
     def g_index(data):
         name = data["level"]
         return ["easy", "medium", "hard"].index(name)
