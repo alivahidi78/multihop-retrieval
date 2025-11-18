@@ -125,22 +125,28 @@ def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=
             results.update({
                 f"{r.__name__}/onehop/mean": float(oavg),
             })
-    return results    
+    return results   
+
+def assess_data(all_data, prompts_and_tools, index, reward_functions, iterations=2):
+    #TODO iterations not used
+    res = evaluate(all_data, reward_functions)
+    res.update({
+        "index": index,
+        "count": len(all_data),
+        "init": check_retrieval_matches(all_data, ["context"]),
+        "init+1": check_retrieval_matches(all_data, ["context", "step_ret_0"]),
+        "init+r": check_retrieval_matches(all_data, ["context", "step_ret_0", "step_ret_1", "step_ret_2"]),
+        "r": check_retrieval_matches(all_data, ["step_ret_0", "step_ret_1", "step_ret_2"]),
+        "r-init": check_retrieval_matches(all_data, ["step_ret_0", "step_ret_1", "step_ret_2"], discard_label = "context")
+    })
+    return res
+     
 
 def assess_checkpoint_data(checkpoints_dir, numbers, prompts_and_tools, iterations=2):
-    #TODO iterations not used
     results = []
     for number in numbers:
-        all_data = load_data(os.path.join(checkpoints_dir, f"./checkpoint-{number}"))
-        res = evaluate(all_data, prompts_and_tools)
-        res.update({
-            "index": number,
-            "count": len(all_data),
-            "init": check_retrieval_matches(all_data, ["context"]),
-            "init+1": check_retrieval_matches(all_data, ["context", "step_ret_0"]),
-            "init+r": check_retrieval_matches(all_data, ["context", "step_ret_0", "step_ret_1", "step_ret_2"]),
-            "r": check_retrieval_matches(all_data, ["step_ret_0", "step_ret_1", "step_ret_2"]),
-            "r-init": check_retrieval_matches(all_data, ["step_ret_0", "step_ret_1", "step_ret_2"], discard_label = "context")
-        })
+        file_path = os.path.join(checkpoints_dir, f"./checkpoint-{number}")
+        all_data = load_data(file_path)
+        res = assess_data(all_data, prompts_and_tools, number, iterations)
         results.append(res)
     return results

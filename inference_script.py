@@ -16,9 +16,9 @@ EMBEDDER = "all-MiniLM-L6-v2"
 EMBEDDING_DIR = "../data/minilm-embedded"
 WIKI_PATH = "../"
 DATA_PATH = "../data"
-MODEL = "unsloth/Qwen3-1.7B"
+MODEL = "unsloth/Qwen3-4B"
 TOOLS_PATH = "./tools/var_3.json"
-OUTPUT_PATH = "../data/inf_/1.7_vodh"
+OUTPUT_PATH = "../data/inf_/4_vodh"
 
 if __name__ == "__main__":
     model, tokenizer = unsloth.FastLanguageModel.from_pretrained(
@@ -64,6 +64,6 @@ if __name__ == "__main__":
     retriever = Retriever(WIKI_PATH, embedder, cpu_index, metadata)
     inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
     
-    run_inference_and_save(all_data, OUTPUT_PATH, inferrer.infer_vod_hist, 2)
+    run_inference_and_save(all_data, OUTPUT_PATH, inferrer.infer_vod_hist, 20)
     program_end = time.time()
     print(f"program concluded in {(program_end - program_start)/60:.4f} minutes.")    
