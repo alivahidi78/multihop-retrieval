@@ -192,7 +192,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         completions_rebundled = utils.rebundle(processed_completions, bundle_lengths)
         completion_ids_list_rebundled = utils.rebundle(completion_ids_list, bundle_lengths)
         rewards_unbundled_func = self._calculate_rewards(data, final_answers, bundle_lengths)
-        print("\trewards", rewards_unbundled_func, completions, bundle_lengths)
         # Apply weights to each reward function's output and sum
         rewards_unbundled = (rewards_unbundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
         # rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)

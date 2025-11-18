@@ -529,17 +529,33 @@ class Inferrer:
                 vod_key = f"{vd_label}_{i}"
                 ret_key= f"{rv_label}_{i}"
                 if vod_key in d:
+                    vod_enough, vod_malformed = utils.information_judgement(self.prompts_and_tools, d[vod_key], Task.VERIFY_OR_DENY)
+                    assert i != iterations
+                if pr_key in d:
                     d["last_iter"] = i
-                    enough, malformed = utils.information_judgement(self.prompts_and_tools, d[vod_key], Task.VERIFY_OR_DENY)
-                    if malformed and i==iterations:
-                        d["error"] = "vod"
+                    if i == iterations:
+                        p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
+                        if p_malformed:
+                            d["error"] = "format"
+                        elif p_enough:
+                            match = re.search(info_pattern, d[pr_key])
+                            if match.group(answer_group):
+                                d[f"multihop{iterations}"] = match.group(answer_group)
+                            else:
+                                d["error"] = "format"
+                        elif not p_enough:
+                            d["error"] = "info"
+                    elif vod_key not in d:
+                        d["error"] = "vod"  
                     elif ret_key in d:
                         d["error"] = "generation"  
                     elif query_key in d:
                         d["error"] = "retrieval"
+                    elif vod_malformed:
+                        d["error"] = "vod_format"
                     elif query_key in d["prompt"] and query_key not in d:
                         d["error"] = "subquery"
-                    elif i == iterations and not enough:
+                    elif vod_enough:
                         p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
                         if p_malformed:
                             d["error"] = "format"
@@ -549,19 +565,7 @@ class Inferrer:
                                 d[f"multihop{iterations}"] = match.group(answer_group)
                             else:
                                 d["error"] = "format"
-                        if not p_enough:
-                            d["error"] = "info"
-                    elif enough:
-                        p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
-                        if p_malformed:
-                            d["error"] = "format"
-                        else:
-                            match = re.search(info_pattern, d[pr_key])
-                            if match.group(answer_group):
-                                d[f"multihop{iterations}"] = match.group(answer_group)
-                            else:
-                                d["error"] = "format"
-                    elif not enough:
+                    elif not vod_enough:
                         d["error"] = "subquery"
                     break
                 if i == 0 and not d[f"multihop{iterations}"]:
@@ -654,8 +658,9 @@ class Inferrer:
         task_list = {
             "before": [Task.RETRIEVE_INIT],
             "main": [Task.PROVIDE_ANSWER, Task.VERIFY_OR_DENY, Task.SUBQUERY_CONSTRUCT_WITH_HISTORY, Task.RETRIEVE],
-            "after" : [Task.PROVIDE_ANSWER, Task.VERIFY_OR_DENY]
-            }
+            "after" : [Task.PROVIDE_ANSWER, 
+                    #    Task.VERIFY_OR_DENY
+            ]}
         return self.infer(task_list, data, start_iter=start_iter, finalize_method=self.finalize_data_vod_hist)
     
     def reconfigure(self, inferrer_config):
