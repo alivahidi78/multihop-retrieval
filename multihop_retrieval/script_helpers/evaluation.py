@@ -10,7 +10,7 @@ def load_data(folder_path):
                 all_data.extend(json.load(f))
     return all_data
 
-def check_retrieval_matches(all_data, context_labels, discard_label = None):
+def check_retrieval_matches(all_data, context_labels, discard_labels = None):
     total_items = 0
     fully_matched_items = 0
     partially_matched_items = 0
@@ -25,9 +25,10 @@ def check_retrieval_matches(all_data, context_labels, discard_label = None):
             except KeyError:
                 pass
         context_titles = set(title for title, _ in context)
-        if discard_label:
-            discard_titles = set(title for title, _ in item[discard_label])
-            context_titles -= discard_titles
+        if discard_labels:
+            for dl in discard_labels:
+                discard_titles = set(title for title, _ in (item.get(dl ,[])))
+                context_titles -= discard_titles
         supporting_titles = set(title for title, _ in item['supporting_facts'])
 
         matches = supporting_titles.intersection(context_titles)
@@ -137,7 +138,9 @@ def assess_data(all_data, index, reward_functions, iterations=2, min_llm=1):
         "init+1": check_retrieval_matches(all_data, ["context", "step_ret_0"]),
         "init+r": check_retrieval_matches(all_data, ["context", "step_ret_0", "step_ret_1", "step_ret_2"]),
         "r": check_retrieval_matches(all_data, ["step_ret_0", "step_ret_1", "step_ret_2"]),
-        "r-init": check_retrieval_matches(all_data, ["step_ret_0", "step_ret_1", "step_ret_2"], discard_label = "context")
+        "r-init": check_retrieval_matches(all_data, ["step_ret_0", "step_ret_1", "step_ret_2"], discard_labels = ["context"]),
+        "ret0": check_retrieval_matches(all_data, ["step_ret_0"], discard_labels=["context"]),
+        "ret1": check_retrieval_matches(all_data, ["step_ret_1"], discard_labels=["context", "step_ret_0"]),
     })
     return res
      
