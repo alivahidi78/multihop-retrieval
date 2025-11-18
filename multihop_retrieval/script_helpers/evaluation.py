@@ -42,9 +42,9 @@ def check_retrieval_matches(all_data, context_labels, discard_label = None):
             unmatched_items += 1
 
     return {
-        "full_match": fully_matched_items/total_items,
-        "part_match": partially_matched_items/total_items,
-        "no_match": unmatched_items/total_items
+        "full_match": round(fully_matched_items/total_items, 6),
+        "part_match": round(partially_matched_items/total_items, 6),
+        "no_match": round(unmatched_items/total_items, 6)
     }
     
 def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=None, iterations=2):
@@ -127,9 +127,9 @@ def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=
             })
     return results   
 
-def assess_data(all_data, index, reward_functions, iterations=2):
+def assess_data(all_data, index, reward_functions, iterations=2, min_llm=1):
     #TODO iterations not used
-    res = evaluate(all_data, reward_functions)
+    res = evaluate(all_data, reward_functions, min_llm= min_llm)
     res.update({
         "index": index,
         "count": len(all_data),

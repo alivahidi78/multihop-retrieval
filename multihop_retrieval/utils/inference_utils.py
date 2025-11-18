@@ -540,7 +540,17 @@ class Inferrer:
                     elif query_key in d["prompt"] and query_key not in d:
                         d["error"] = "subquery"
                     elif i == iterations and not enough:
-                        d["error"] = "info"
+                        p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
+                        if p_malformed:
+                            d["error"] = "format"
+                        else:
+                            match = re.search(info_pattern, d[pr_key])
+                            if match.group(answer_group):
+                                d[f"multihop{iterations}"] = match.group(answer_group)
+                            else:
+                                d["error"] = "format"
+                        if not p_enough:
+                            d["error"] = "info"
                     elif enough:
                         p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
                         if p_malformed:
