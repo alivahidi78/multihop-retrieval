@@ -18,7 +18,7 @@ WIKI_PATH = "../"
 DATA_PATH = "../data"
 MODEL = "unsloth/Qwen3-4B"
 TOOLS_PATH = "./tools/var_4.json"
-OUTPUT_PATH = "../data/inf_/4_vodh_v4"
+OUTPUT_PATH = "../data/_test_"
 
 if __name__ == "__main__":
     model, tokenizer = unsloth.FastLanguageModel.from_pretrained(
@@ -64,6 +64,6 @@ if __name__ == "__main__":
     retriever = Retriever(WIKI_PATH, embedder, cpu_index, metadata)
     inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
     
-    run_inference_and_save(all_data, OUTPUT_PATH, inferrer.infer_vod_hist, 20)
+    run_inference_and_save(all_data, OUTPUT_PATH, inferrer.infer_vod_hist, 2)
     program_end = time.time()
     print(f"program concluded in {(program_end - program_start)/60:.4f} minutes.")    

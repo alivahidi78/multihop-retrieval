@@ -136,8 +136,9 @@ class Inferrer:
             prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context_str)
 
             grammar = None
-            if self.config.enforce_grammar:
-                grammar = Regex(self.prompts_and_tools[task_id.value]["pattern"])
+            pattern = self.prompts_and_tools[task_id.value]["pattern"]
+            if self.config.enforce_grammar and pattern:
+                grammar = Regex(pattern)
             
             #TODO batch this
             llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
@@ -203,14 +204,18 @@ class Inferrer:
             except KeyError:
                 # the sample is skipped since there's no previous iteration.
                 continue
-            answer_match = re.search(info_pattern, prev_response)
-            if(not self._check_done(prev_response, prev_task_id)):
+            if info_pattern:
+                answer_match = re.search(info_pattern, prev_response)
+            if info_pattern and (not self._check_done(prev_response, prev_task_id)):
                 # response is no
                 data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
-            elif not answer_match or not answer_match.group(answer_group):
+            elif info_pattern and (not answer_match or not answer_match.group(answer_group)):
                 data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
-            else:    
-                response = answer_match.group(answer_group)
+            else:
+                if info_pattern:    
+                    response = answer_match.group(answer_group)
+                else:
+                    response = prev_response
                 context_str = utils.context_to_string(context)
                 prompt = utils.get_prompts(self.prompts_and_tools, task_id, query=query, context=context_str, response=response)
 
@@ -534,17 +539,20 @@ class Inferrer:
                 if pr_key in d:
                     d["last_iter"] = i
                     if i == iterations:
-                        p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
-                        if p_malformed:
-                            d["error"] = "format"
-                        elif p_enough:
-                            match = re.search(info_pattern, d[pr_key])
-                            if match.group(answer_group):
-                                d[f"multihop{iterations}"] = match.group(answer_group)
-                            else:
+                        if not info_pattern:
+                            d[f"multihop{iterations}"] = d[pr_key]
+                        else:
+                            p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
+                            if p_malformed:
                                 d["error"] = "format"
-                        elif not p_enough:
-                            d["error"] = "info"
+                            elif p_enough:
+                                match = re.search(info_pattern, d[pr_key])
+                                if match.group(answer_group):
+                                    d[f"multihop{iterations}"] = match.group(answer_group)
+                                else:
+                                    d["error"] = "format"
+                            elif not p_enough:
+                                d["error"] = "info"
                     elif vod_key not in d:
                         d["error"] = "vod"  
                     elif ret_key in d:
@@ -556,15 +564,18 @@ class Inferrer:
                     elif query_key in d["prompt"] and query_key not in d:
                         d["error"] = "subquery"
                     elif vod_enough:
-                        p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
-                        if p_malformed:
-                            d["error"] = "format"
+                        if not info_pattern:
+                            d[f"multihop{iterations}"] = d[pr_key]
                         else:
-                            match = re.search(info_pattern, d[pr_key])
-                            if match.group(answer_group):
-                                d[f"multihop{iterations}"] = match.group(answer_group)
-                            else:
+                            p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
+                            if p_malformed:
                                 d["error"] = "format"
+                            else:
+                                match = re.search(info_pattern, d[pr_key])
+                                if match.group(answer_group):
+                                    d[f"multihop{iterations}"] = match.group(answer_group)
+                                else:
+                                    d["error"] = "format"
                     elif not vod_enough:
                         d["error"] = "subquery"
                     break

@@ -1,27 +1,37 @@
-import json, os, copy, time
+import os, json, time, re, traceback
+
+program_start = time.time()
+
 import unsloth
-from multihop_retrieval.utils.inference_utils import Inferrer 
-from multihop_retrieval.utils.retrieval_utils import Retriever
-from multihop_retrieval.utils.generic_utils import Task
-from multihop_retrieval.utils import generic_utils as utils
-from multihop_retrieval.trainer import MultihopGRPOTrainer
-from sentence_transformers import SentenceTransformer
 import faiss
 from tqdm import tqdm
-import wandb
 import torch
+import pandas as pd
 
+from multihop_retrieval.utils.inference_utils import Inferrer, InferrerConfig
+from transformers.generation.configuration_utils import GenerationConfig
+from sentence_transformers import SentenceTransformer
+from multihop_retrieval.utils.retrieval_utils import Retriever
+from multihop_retrieval.script_helpers.inference import run_inference_and_save
 from dotenv import load_dotenv
 load_dotenv()
+import wandb
+
+nprobe = 32
+EMBEDDER = "all-MiniLM-L6-v2"
+EMBEDDING_DIR = "../data/minilm-embedded"
+WIKI_PATH = "../"
+DATA_PATH = "../data"
 MODEL = "unsloth/Qwen3-4B"
-OUTPUT_PATH = "./results/test-4w"
-TOOLS_PATH = "./multihop_retrieval/tools/var_5.json"
-BASE_PATH = os.getenv("BASE_PATH")
-EMBEDDER = os.getenv("EMBEDDER")
-EMBEDDING_DIR = os.path.join(BASE_PATH, os.getenv("EMBEDDING_DIR"))
-WIKI_PATH = os.path.join(BASE_PATH, os.getenv("WIKI_PATH"))
-DATA_PATH = os.path.join(BASE_PATH, os.getenv("DATA_PATH"))
-RUN_NAME = "exp-5 (vod-hist test4w pro simplified - 4B)"
+TOOLS_PATH = "./tools/var_5.json"
+OUTPUT_PATH = "../data/_test_4"
+CHECKPOINT_PATH = "./results/test-4"
+RUN_NAME = "eval_4(pro is shortanswer)"
+
+from multihop_retrieval.utils.inference_utils import Inferrer
+from multihop_retrieval.utils import generic_utils as utils
+from multihop_retrieval.utils.generic_utils import Task
+from multihop_retrieval.trainer import MultihopGRPOTrainer
 
 def get_reward_functions(prompts_and_tools):
     def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):
@@ -127,6 +137,8 @@ def get_reward_functions(prompts_and_tools):
         rewards = [0]*sum(bundle_lengths)
         index = 0
         for d in data:
+            supporting_facts = d["supporting_facts"]
+            context = d["context"].copy()
             prompts = d["prompt"]
             completions = d["completion_decoded"]
             for j in range(3):
@@ -155,72 +167,139 @@ def get_reward_functions(prompts_and_tools):
     r_functions = MultihopGRPOTrainer.get_default_reward_functions(prompts_and_tools)
     return r_functions + [info_decision_judge, subq_decision_judge, formatting_judge]
 
-if __name__ == "__main__":
-    torch._dynamo.config.cache_size_limit = 10**8
-    train_limit = 500
-    # eval_limit = 100
-    nprobe = 32
-    iterations = 2
-    epochs = 1
+from multihop_retrieval.script_helpers.evaluation import load_data, assess_data
+
+def upload_results(index, file_path):
+    with open(f"multihop_retrieval/{TOOLS_PATH}", "r") as f:
+        prompts_and_tools = json.load(f)
+        
+    all_data = []
+    try:
+        0.5, 0.3, 0.2, 0.2, 0.2
+        all_data = load_data(file_path)[:]
+        res = assess_data(all_data, index, get_reward_functions(prompts_and_tools), 2, min_llm=2)
+        res.update({
+            "reward": (res['compute_exact/mean']*0.5 + res['compute_f1/mean']*0.3 + res['info_decision_judge/mean']*0.2 + res['subq_decision_judge/mean']*0.2 + res['formatting_judge/mean']*0.2)/1.4,
+            "reward_emf1": (res['compute_exact/mean']*0.5 + res['compute_f1/mean']*0.3)/0.8
+        })
+        wandb.log({
+            "count": res["count"],
+            "reward": res["reward"],
+            "reward_emf1":res["reward_emf1"],
+            "EM": res['compute_exact/mean'],
+            "F1": res['compute_f1/mean'],
+            "info_dec": res['info_decision_judge/mean'],
+            "subq_dec": res['subq_decision_judge/mean'],
+            "format": res['formatting_judge/mean'],
+            "info_err": res["errors/info/f"],
+            "subq_err": res["errors/subq/f"],
+            "missing_ans": res["missing_ans"],
+            "init_r":  round(res["init+r"]["part_match"] +res["init+r"]["full_match"], 4),
+            "ret0":  round(res["ret0"]["part_match"] +res["ret0"]["full_match"], 4),
+            "ret1":  round(res["ret1"]["part_match"] +res["ret1"]["full_match"], 4),
+        }, step=index)
+    except:
+        traceback.print_exc()
+        
+
+def infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, retriever, checkpoints_dir, output_dir, method, reverse=False, generation_config=None, add_onehop=False, start=0, step=50, end=20):
+    numbers = [100,200,300,400,500]
+    checkpoints = [
+        './checkpoint-100',
+        './checkpoint-200',
+        './checkpoint-300',
+        './checkpoint-400',
+        './checkpoint-500',
+        ]
+    checkpoints = sorted([os.path.join(checkpoints_dir, c) for c in checkpoints],
+                         key=lambda x: int(re.search(r"checkpoint-(\d+)", x).group(1)),
+    reverse=reverse)
+
+    print("discovered checkpoints:", checkpoints)
+    it = 0
+    for num, ckpt_path in tqdm(zip(numbers,checkpoints), desc="checkpoints processed"):
+        print(f"waiting for the data in {ckpt_path}...")
+        while not os.path.isdir(ckpt_path):
+            time.sleep(120)
+        print("data online...")
+        time.sleep(120)
+        print("Waited two minutes.\nBeginning...")
+        ckpt_name = os.path.basename(ckpt_path)
+        print(f"\n🧩 Loading adapter from {ckpt_name}...")
+
+        # Load LoRA adapter weights
+        model.load_adapter(ckpt_path, adapter_name=f"adapter_checkpoint")
+        model.set_adapter(f"adapter_checkpoint")
+        # Run your operation
+        if not generation_config:
+            generation_config = GenerationConfig(
+                        max_new_tokens=128,
+                        do_sample=True,
+                        top_k=None,
+                        top_p=None,
+                        temperature=0.6,)
+        inf_config = InferrerConfig(use_tqdm=False, logs=False, iterations=2, remove_tensors=True, add_onehop=add_onehop, generation_config=generation_config)
+        inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
+        save_path = os.path.join(output_dir, ckpt_name)
+        os.makedirs(save_path, exist_ok=True)
+        if method == "basic":
+            infer_func = inferrer.infer_basic
+        elif method == "hist":
+            infer_func = inferrer.infer_vod_hist
+        elif method == "vod":
+            infer_func = inferrer.infer_vod
+        elif method == "vod_hist":
+            infer_func = inferrer.infer_vod_hist
+        else:
+            raise ValueError(f"inference mode {method} is unknown.")
+        run_inference_and_save(all_data, save_path, infer_func, end, start=start, step=step)
+        upload_results(num, save_path)
+        # Unload adapter to save VRAM
+        model.delete_adapter(f"adapter_checkpoint")
+        torch.cuda.empty_cache()
+        it+=1
+
+    print("\nDone processing all checkpoints!")
     
+if __name__ == "__main__":
     WANDB_KEY = os.getenv("WANDB_KEY")
     wandb.login(key=WANDB_KEY)
     wandb.init(
-        project="huggingface",
+        project="evaluation",
         name=RUN_NAME,
+        entity="alivahidi"
     )
-    
-    print("Current working directory: ", os.getcwd())
-    print("base path: ", BASE_PATH)
-    print("embedder: ", EMBEDDER)
-    print("model: ", MODEL)
-    print("embedding dir: ", EMBEDDING_DIR)
-    print("wiki path: ", WIKI_PATH)
-    print("data path: ", DATA_PATH)
-    print("tools path: ", TOOLS_PATH)
-    print("output path: ", OUTPUT_PATH)
-    
-    with open(TOOLS_PATH, 'r') as f:
-        prompts_and_tools = json.load(f)
-    
-    embedder = SentenceTransformer(EMBEDDER, device="cuda")
-    
-    print("embedder loaded.")
-    
-    with open(os.path.join(DATA_PATH, "./hotpot_train_train_subset_mh.json"), "r") as f:
-        all_data = json.load(f)
-        
-    print("dataset loaded.")
-    
-    from trl import GRPOConfig
+    time.sleep(20)
+    wandb.log({
+        "count": 1000,
+        "reward": 0.228925,
+        "reward_emf1": 0.385677,
+        "EM": 0.362,
+        "F1": 0.425137,
+        "info_dec": 0.026193,
+        "subq_dec": 0.013654,
+        "format": 0.0,
+        "info_err": 0.004,
+        "subq_err": 0.0,
+        "missing_ans": 4,
+        "init_r": 0.6790,
+        "ret0":  0.1100,
+        "ret1":  0.0070,
+    }, step=0)
+    wandb.log({"Test": 5}, step=0)
+    wandb.log({"Test": 5}, step=50)
     model, tokenizer = unsloth.FastLanguageModel.from_pretrained(
         model_name = MODEL,
         max_seq_length = 8000,
         dtype = None,
         load_in_4bit = False,
         fast_inference=False, #needs vllm
-        gpu_memory_utilization=0.9,
-        cache_dir = "../data/cache_test"
-        # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
+        gpu_memory_utilization=0.6,
     )
-    
-                
-    model = unsloth.FastLanguageModel.get_peft_model(
-        model,
-        r = 64, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-        target_modules = ['q_proj', 'v_proj'],
-        lora_alpha = 64,
-        lora_dropout = 0, # Supports any, but = 0 is optimized
-        bias = "none",    # Supports any, but = "none" is optimized
-        # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-        use_gradient_checkpointing = False, # True or "unsloth" for very long context
-        use_rslora = False,  # We support rank stabilized LoRA
-        loftq_config = None, # And LoftQ
-    )
+    print("model loaded.")
     
     with open(f"{EMBEDDING_DIR}/merged_lookup.json", "r") as f:
         metadata = json.load(f)
-        
     print("lookup table loaded.")
     
     start = time.time()
@@ -228,47 +307,24 @@ if __name__ == "__main__":
     cpu_index.nprobe = nprobe
     end = time.time()
     print(f"ivf index loaded in {(end - start)/60:.4f} minutes.")
-        
-    print("ivf index loaded.")
+
+    with open(os.path.join(DATA_PATH, "./HotpotQA_split/hotpot_train_train_subset_mh.json"), "r") as f:
+        all_data = json.load(f)
+
+    print(f"dataset loaded {len(all_data)}.")
     
-    training_args = GRPOConfig(
-        output_dir=OUTPUT_PATH,
-        logging_dir="./logs",
-        num_generations=8,
-        per_device_train_batch_size=8,
-        # per_device_eval_batch_size=8,
-        logging_steps=5,
-        save_steps=50,
-        num_train_epochs= epochs,
-        label_names=["labels"],
-        gradient_accumulation_steps = 1,
-        beta = 0.0,
-        eval_on_start=False,
-        # eval_steps=200,
-        # eval_strategy="steps",
-        report_to="wandb",
-        run_name=RUN_NAME,
-        torch_empty_cache_steps = 1,
-        reward_weights=[0.5, 0.3, 0.2, 0.2, 0.2],
-        temperature=1.0,
-        generation_kwargs={"temperature": 1.0}
-    )
+    all_data = all_data[-1000:]
+
+    embedder = SentenceTransformer(EMBEDDER, device="cuda")
+    print("embedder loaded.")
+
+    with open(f"multihop_retrieval/{TOOLS_PATH}", "r") as f:
+        prompts_and_tools = json.load(f)
     
     retriever = Retriever(WIKI_PATH, embedder, cpu_index, metadata)
-    train_set = copy.deepcopy(all_data[:train_limit])
-    trainer = MultihopGRPOTrainer(
-        model = model,
-        retriever = retriever,
-        prompts_and_tools = prompts_and_tools,
-        args=training_args,
-        iterations = 2,
-        reward_funcs=get_reward_functions(prompts_and_tools),
-        train_dataset = train_set,
-        unbundled_batching = 8,
-        no_cache = True,
-        inference_mode="vod_hist"
-    )
     
-    trainer.train(
-         resume_from_checkpoint=True
-        )
+    infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, retriever, CHECKPOINT_PATH, OUTPUT_PATH, "vod_hist", reverse=False)
+    
+    program_end = time.time()
+    print(f"program concluded in {(program_end - program_start)/60:.4f} minutes.")
+    wandb.finish()

@@ -143,6 +143,8 @@ def information_judgement(prompts_and_tools, response, task_id):
     negative_tag = prompts_and_tools[task_id.value]["negative_tag"]
     tag_group = prompts_and_tools[task_id.value]["tag_group"]
     pattern = prompts_and_tools[task_id.value]["pattern"]
+    if not pattern:
+        return True, False
     match = re.search(pattern, response) 
     if match:
         group_text = match.group(tag_group)
@@ -158,6 +160,8 @@ def information_judgement(prompts_and_tools, response, task_id):
 
 def format_judgement(prompts_and_tools, response, task_id):
     pattern = prompts_and_tools[task_id.value]["pattern"]
+    if not pattern:
+        return True
     match = re.search(pattern, response) 
     if match:
         return True

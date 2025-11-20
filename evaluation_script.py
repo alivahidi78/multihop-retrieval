@@ -6,7 +6,7 @@ from multihop_retrieval.utils import generic_utils as utils
 from multihop_retrieval.utils.generic_utils import Task
 from multihop_retrieval.trainer import MultihopGRPOTrainer
 
-TOOLS_PATH = "./tools/var_3.json"
+TOOLS_PATH = "./tools/var_4.json"
 
 def get_reward_functions(prompts_and_tools):
     def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):
@@ -84,11 +84,11 @@ def get_reward_functions(prompts_and_tools):
             context = d["context"].copy()
             prompts = d["prompt"]
             completions = d["completion_decoded"]
-            retrievals = {}
+            retrievals = []
             for k in range(0, 3):
                 try:
                     retrievals.extend(d[Inferrer.task_label(Task.RETRIEVE, k)])
-                except:
+                except KeyError:
                     pass
             context_supported_ret = [False]*len(supporting_facts)
             new_supported_ret = [False]*len(supporting_facts)
