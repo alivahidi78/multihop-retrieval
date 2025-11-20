@@ -210,7 +210,8 @@ class Inferrer:
                 # response is no
                 data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
             elif info_pattern and (not answer_match or not answer_match.group(answer_group)):
-                data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
+                pass
+                # data[i][col_name] = self.prompts_and_tools[task_id.value]["negative_tag"]
             else:
                 if info_pattern:    
                     response = answer_match.group(answer_group)
