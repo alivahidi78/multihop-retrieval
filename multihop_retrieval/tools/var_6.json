@@ -1,0 +1,180 @@
+{
+    "INFO_CHECK": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nConsider if the provided context is enough to respond to the query:\nContext:\n\n<context>\n$context\n<\/context>\nUse the correct tool to react to the situation.\nALWAYS USE ONE TOOL.\nOne and only one tool is applicable for each user query.\nMake sure to include a tool call in your response.\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "information_not_sufficient",
+                    "description": "Indicate that information given in the context is NOT sufficient to respond to the query",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "information_is_sufficient",
+                    "description": "Indicate that information given in the context is sufficient to respond to the query.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "answer": {
+                                "type": "string",
+                                "description": "A short response (one word or expression) to the query based on context"
+                            }
+                        },
+                        "required": [
+                            "answer"
+                        ]
+                    }
+                }
+            }
+        ],
+        "pattern": "<tool_call>\n(\\{\"name\": \"(information_is_sufficient|information_not_sufficient)\", \"arguments\": \\{(|\"answer\": \"(.*)\")\\}\\})\n<\/tool_call>",
+        "positive_tag": "information_is_sufficient",
+        "negative_tag": "information_not_sufficient",
+        "answer_group": 4,
+        "tag_group": 2
+    },
+    "SUBQUERY_CONSTRUCT": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink about what pieces of information are missing and come up with multiple search queries (similar to google search) whose answer aids in finding the missing pieces of information. List these queries in your response.\nDO NOT REPEAT THE USER QUERY.Ask simpler questions instead.\nContext:\n\n<context>\n$context\n<\/context>\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": null,
+        "pattern": "1\\.\\s(.+)\r?\n2\\.\\s(.+)(\r?\n3\\.\\s(.+))?(\r?\n4\\.\\s(.+))?\n",
+        "regex_groups": [
+            1,
+            2,
+            4,
+            6
+        ]
+    },
+    "SHORT_ANSWER": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nRespond to the user's query based on the provided context.\nContext:\n<context>\n$context\n<\/context>\nKeep your responses short. If possible to one expression or one word.\n\nExamples:\nUser: Is Antarctica in the North or South of the Planet?\nAssistant: South\n\nUser: Has there ever been a human on Mars before 2022?\nAssistant: No\n\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": null,
+        "pattern": ".*"
+    },
+
+    "SUBQUERY_CONSTRUCT_WITH_HISTORY": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.\nConsider the user's query and the following context.\nThink about what pieces of information are missing and come up with multiple search queries (similar to google search) whose answer aids in finding the missing pieces of information. Use the proper tool to call for queries. Keep your queries short and to the point.\nDO NOT REPEAT THE USER QUERY. DO NOT REPEAT QUERIES YOU HAVE ALREADY MADE.\nThis is the intitial context:\n<context>\n$context\n<\/context>\nThese are the queries you have previously made:\n<list>\n$past_queries\n<\/list>\nThese are the information retrieved based on those queries:\n<context>\n$additional_context\n<\/context>"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "search the database for information via queries",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query1": {
+                                "type": "string",
+                                "description": "A short query similar to a google search. Independet of the other query."
+                            },
+                            "query2": {
+                                "type": "string",
+                                "description": "A short query similar to a google search. Independet of the other query."
+                            }
+                        },
+                        "required": [
+                            "query1", "query2"
+                        ]
+                    }
+                }
+            }
+        ],
+        "pattern": "<tool_call>\\{\"name\": \"search\", \"arguments\": \\{\"query1\": \"([]A-Za-zÀ-ÿ0-9!#$%&\\'()*+,./:;<=>?@\\[^_`{|}~ -]{0,50})\"(, \"query2\": \"([]A-Za-zÀ-ÿ0-9!#$%&\\'()*+,./:;<=>?@\\[^_`{|}~ -]{0,50}))\"\\}\\}</tool_call>",
+        "regex_groups": [
+            1,
+            3
+        ]
+    },
+    "PROVIDE_ANSWER": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "Give a short answer to the user's query based on the provided context. Keep the answer to one word or expression.\nContext:\n<context>\n$context\n<\/context>\n"
+            },
+            {
+                "role": "user",
+                "content": "$query"
+            }
+        ],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "provide_response",
+                    "description": "Indicate that the LLM is prepared to give a final response to user query.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "answer": {
+                                "type": "string",
+                                "description": "A short response (one word or expression) to the query based on context"
+                            }
+                        },
+                        "required": [
+                            "answer"
+                        ]
+                    }
+                }
+            }
+        ],
+        "pattern": "<tool_call>(\\{\"name\": \"(provide_response)\", \"arguments\": \\{(\"answer\": \"([]A-Za-zÀ-ÿ0-9!#$%&\\'()*+,./:;<=>?@\\[^_`{|}~ -]{0,50})\")\\}\\})</tool_call>",
+        "answer_group": 4,
+        "tag_group": 2,
+        "positive_tag": "provide_response",
+        "negative_tag": "false"
+    },
+    "VERIFY_OR_DENY": {
+        "prompt": [
+            {
+                "role": "system",
+                "content": "Consider the following context: \n<context>\n$context\n<\/context>\n Now consider the following query and response.\n Query: $query\n Response: $response\n Output 'yes' if the response is a short correct answer to the query and can be derived from the provided context. Output 'no' if the response is either incorrect or if the information inside the context is not enough to respond to the query."
+            }
+        ],
+        "tools": null,
+        "pattern": "(yes|no)",
+        "positive_tag": "yes",
+        "negative_tag": "no",
+        "tag_group": 1
+    }
+}
