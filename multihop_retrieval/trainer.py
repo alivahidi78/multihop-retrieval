@@ -154,7 +154,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
             completion_mask = completion_mask * (~truncated_completions).unsqueeze(1).int()
 
         # Concatenate prompt_mask with completion_mask for logit computation
+        prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)  # (B, P+C)
+        logits_to_keep = completion_ids.size(1)
 
         old_per_token_logps = None
         ref_per_token_logps = None
@@ -165,7 +167,16 @@ class MultihopGRPOTrainer(GRPOTrainer):
                 self.use_vllm and self.vllm_importance_sampling_correction
             ):
                 # This means generation is misaligned
-                raise NotImplementedError("This option is not currently supported.")
+                mode = "train" if self.model.training else "eval"
+                if self.unbundled_batching:
+                    batch_size = self.unbundled_batching if mode == "train" else None
+                old_per_token_logps, _ = self._get_per_token_logps_and_entropies(
+                    self.model,
+                    prompt_completion_ids,
+                    attention_mask,
+                    logits_to_keep,
+                    batch_size,
+                )
                 
             if self.use_vllm and self.vllm_importance_sampling_correction:
                 # This means generation is misaligned
