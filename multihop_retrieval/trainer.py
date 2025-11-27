@@ -90,6 +90,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
                     data = inferrer.infer_vod(data)
                 elif self.inference_mode == "vod_hist":
                     data = inferrer.infer_vod_hist(data)
+                elif self.inference_mode == "onehop":
+                    data = inferrer.infer_onehop(data)
                 else:
                     raise ValueError(f"inference mode {self.inference_mode} is unknown.")
         

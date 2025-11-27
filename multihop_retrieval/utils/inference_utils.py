@@ -120,6 +120,8 @@ class Inferrer:
     
     @method_task_id(Task.INFO_CHECK)    
     def info_check_iter(self, data, iteration, prev_task_id, task_id=None):
+        if prev_task_id == Task.RETRIEVE_INIT:
+            prev_task_id = Task.RETRIEVE
         col_name = Inferrer.task_label(task_id, iteration)
         for i in tqdm(range(0, len(data), 1), disable = not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
             selected = data[i]
@@ -151,7 +153,7 @@ class Inferrer:
             predicted_m = llm_res["completion_decoded"]
 
             if self.config.add_onehop and iteration==0:
-                predicted_o = self._one_hop(query, context)
+                predicted_o = self._short_answer(query, context)
 
             data[i][col_name] = predicted_m
             data = self._append_llm_res(data, llm_res, i, iteration, task_id)
@@ -160,7 +162,7 @@ class Inferrer:
         return data
     
     ### short_answer ###
-    def _one_hop(self, query, context, thinking=False):
+    def _short_answer(self, query, context, thinking=False):
         context_str = utils.context_to_string(context)
         prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context_str)
         llm_res = self._call_llm(prompt, enable_thinking=thinking, skip_special_tokens=True)
@@ -584,6 +586,25 @@ class Inferrer:
                     d["error"] = "unknown"    
         return data
     
+    def finalize_data_onehop(self, data, iterations):
+        info_pattern = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["pattern"]
+        answer_group = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["answer_group"]
+        pr_label = Inferrer.dict_labels[Task.PROVIDE_ANSWER]
+        pr_key = f"{pr_label}_{0}"
+        for d in data:
+            if not info_pattern:
+                d[f"onehop"] = d[pr_key]
+            else:
+                p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
+                if p_malformed:
+                    d["error"] = "format"
+                else:
+                    match = re.search(info_pattern, d[pr_key])
+                    if match.group(answer_group):
+                        d[f"onehop"] = match.group(answer_group)
+                    else:
+                        d["error"] = "format"
+    
     #################################### generic main ####################################
         
     def finalize_data(self, data, iterations = 2):
@@ -613,7 +634,10 @@ class Inferrer:
             if self.no_cache and self.config.device == "cuda":
                 torch.cuda.empty_cache()
             for idx, task in enumerate(task_list["main"]):
-                data = self.task_func(task)(data, i, prev_task_id=task_list["main"][idx-1])
+                if idx == 0 and i == 0:
+                    data = self.task_func(task)(data, i, prev_task_id=task_list["before"][-1])
+                else:
+                    data = self.task_func(task)(data, i, prev_task_id=task_list["main"][idx-1])
             iterations_processed += 1
         
         for idx, task in enumerate(task_list["after"]):
@@ -670,10 +694,18 @@ class Inferrer:
         task_list = {
             "before": [Task.RETRIEVE_INIT],
             "main": [Task.PROVIDE_ANSWER, Task.VERIFY_OR_DENY, Task.SUBQUERY_CONSTRUCT_WITH_HISTORY, Task.RETRIEVE],
-            "after" : [Task.PROVIDE_ANSWER, 
-                    #    Task.VERIFY_OR_DENY
-            ]}
+            "after" : [Task.PROVIDE_ANSWER]
+        }
         return self.infer(task_list, data, start_iter=start_iter, finalize_method=self.finalize_data_vod_hist)
+    
+    def infer_onehop(self, data, start_iter=0):
+        self.config.iterations = 1
+        task_list = {
+            "before": [Task.RETRIEVE_INIT],
+            "main": [Task.PROVIDE_ANSWER],
+            "after" : []
+        }
+        return self.infer(task_list, data, start_iter=start_iter, finalize_method=self.finalize_data_onehop)
     
     def reconfigure(self, inferrer_config):
         self.config = inferrer_config
