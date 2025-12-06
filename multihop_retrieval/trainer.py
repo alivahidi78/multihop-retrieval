@@ -94,8 +94,10 @@ class MultihopGRPOTrainer(GRPOTrainer):
                     data = inferrer.infer_onehop(data)
                 else:
                     raise ValueError(f"inference mode {self.inference_mode} is unknown.")
-        
-        final_answers = [d[f"multihop{self.iterations}"] for d in data]
+        if self.inference_mode == "onehop":
+            final_answers = [d["onehop"] for d in data]
+        else:
+            final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]
         
         prompts_bundled = [list(d["prompt"].values()) for d in data]
@@ -384,11 +386,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
                     loss = self.compute_loss(model, sub_inputs, num_items_in_batch=sub_items)
                 #########################################################################
                 
-                if (
-                    self.args.torch_empty_cache_steps is not None
-                    and self.state.global_step % self.args.torch_empty_cache_steps == 0
-                ):
-                    torch.cuda.empty_cache()
+                if self.no_cache:
+                    torch.cuda.empty_cache()  
+                    
                 kwargs = {}
                 # For LOMO optimizers you need to explicitly use the learning rate
                 if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:

@@ -592,8 +592,10 @@ class Inferrer:
         pr_label = Inferrer.dict_labels[Task.PROVIDE_ANSWER]
         pr_key = f"{pr_label}_{0}"
         for d in data:
+            d["onehop"] = ""
+            d["error"] = ""
             if not info_pattern:
-                d[f"onehop"] = d[pr_key]
+                d["onehop"] = d[pr_key]
             else:
                 p_enough, p_malformed = utils.information_judgement(self.prompts_and_tools, d[pr_key], Task.PROVIDE_ANSWER)
                 if p_malformed:
@@ -601,9 +603,10 @@ class Inferrer:
                 else:
                     match = re.search(info_pattern, d[pr_key])
                     if match.group(answer_group):
-                        d[f"onehop"] = match.group(answer_group)
+                        d["onehop"] = match.group(answer_group)
                     else:
                         d["error"] = "format"
+        return data
     
     #################################### generic main ####################################
         
