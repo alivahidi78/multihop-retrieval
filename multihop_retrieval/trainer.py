@@ -57,8 +57,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
         
     #Overridden
     def _generate_and_score_completions(self, inputs):
-        if self.args.num_generations != self.args.per_device_train_batch_size:
-            raise NotImplementedError("num_generations should be equal to per_device_train_batch_size.")
+        # if self.args.num_generations != self.args.per_device_train_batch_size:
+        #     raise NotImplementedError("num_generations should be equal to per_device_train_batch_size.")
         
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"

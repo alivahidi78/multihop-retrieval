@@ -48,13 +48,15 @@ def check_retrieval_matches(all_data, context_labels, discard_labels = None):
         "no_match": round(unmatched_items/total_items, 6)
     }
     
-def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=None, iterations=2):
+def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=None, iterations=2, final_label = None):
+    if not final_label:
+        final_label = f"multihop{iterations}"
     if limit:
         all_data = all_data[:limit]
     def g_index(data):
         name = data["level"]
         return ["easy", "medium", "hard"].index(name)
-    final_answers = [d[f"multihop{iterations}"] for d in all_data]
+    final_answers = [d[final_label] for d in all_data]
     llm_calls =  [d[f"llm_calls"] for d in all_data]
     sc_calls = [d[f"sc_calls"] for d in all_data]
     if include_onehop:
@@ -71,7 +73,7 @@ def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=
     mult_data = []
     missing_ans = 0
     for d in all_data:
-        if d[f"multihop{iterations}"]=="":
+        if d[final_label]=="":
             missing_ans+=1
         total_g[g_index(d)]+=1
         if d["llm_calls"] > min_llm:
@@ -128,9 +130,9 @@ def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=
             })
     return results   
 
-def assess_data(all_data, index, reward_functions, iterations=2, min_llm=1):
+def assess_data(all_data, index, reward_functions, iterations=2, min_llm=1, final_label = None):
     #TODO iterations not used
-    res = evaluate(all_data, reward_functions, min_llm= min_llm)
+    res = evaluate(all_data, reward_functions, min_llm= min_llm, final_label=final_label)
     res.update({
         "index": index,
         "count": len(all_data),
