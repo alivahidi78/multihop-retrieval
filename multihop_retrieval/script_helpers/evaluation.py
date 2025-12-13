@@ -136,6 +136,9 @@ def assess_data(all_data, index, reward_functions, iterations=2, min_llm=1, fina
     res.update({
         "index": index,
         "count": len(all_data),
+        "iter0_count": sum(d.get("sc_calls") == 0 for d in all_data),
+        "iter1_count": sum(d.get("sc_calls") == 1 for d in all_data),
+        "iter2_count": sum(d.get("sc_calls") == 2 for d in all_data),
         "init": check_retrieval_matches(all_data, ["context"]),
         "init+1": check_retrieval_matches(all_data, ["context", "step_ret_0"]),
         "init+r": check_retrieval_matches(all_data, ["context", "step_ret_0", "step_ret_1", "step_ret_2"]),

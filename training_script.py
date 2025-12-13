@@ -1,5 +1,6 @@
 import json, os, copy, time
-import unsloth
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model
 from multihop_retrieval.utils.inference_utils import Inferrer 
 from multihop_retrieval.utils.retrieval_utils import Retriever
 from multihop_retrieval.utils.generic_utils import Task
@@ -13,18 +14,20 @@ import torch
 
 from dotenv import load_dotenv
 load_dotenv()
-MODEL = "unsloth/Qwen3-4B"
-OUTPUT_PATH = "./results/test-4w"
-TOOLS_PATH = "./multihop_retrieval/tools/var_5.json"
+# MODEL = "unsloth/Qwen3-4B"
+OUTPUT_PATH = "./results/test-f5-7"
+TOOLS_PATH = "./multihop_retrieval/tools/var_6.json"
 BASE_PATH = os.getenv("BASE_PATH")
 EMBEDDER = os.getenv("EMBEDDER")
 EMBEDDING_DIR = os.path.join(BASE_PATH, os.getenv("EMBEDDING_DIR"))
 WIKI_PATH = os.path.join(BASE_PATH, os.getenv("WIKI_PATH"))
 DATA_PATH = os.path.join(BASE_PATH, os.getenv("DATA_PATH"))
-RUN_NAME = "exp-5 (vod-hist test4w pro simplified - 4B)"
+RUN_NAME = "f5-7 (simple 3e-6)"
 
 def get_reward_functions(prompts_and_tools):
     def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):
+        count = 0
+        r_sum = 0
         rewards = [0]*sum(bundle_lengths)
         index = 0
         for d in data:
@@ -66,15 +69,21 @@ def get_reward_functions(prompts_and_tools):
                         elif True in supported_ret:
                             rewards[index] = 0
                         else:
-                            rewards[index] = 1.2     
+                            rewards[index] = 1.2
+                    count += 1     
+                    r_sum += rewards[index]
                     index += 1
                 if sc_label in prompts.keys():
                     rewards[index] = 0  
-                    index += 1  
+                    index += 1
+        # for i in range(len(rewards)):
+        #     rewards[i] = r_sum/count  
         assert sum(bundle_lengths) == index   
         return rewards
     
     def subq_decision_judge(data, final_answers, bundle_lengths, **kwargs):
+        count = 0
+        r_sum = 0
         rewards = [0]*sum(bundle_lengths)
         index = 0
         for d in data:
@@ -119,7 +128,11 @@ def get_reward_functions(prompts_and_tools):
                         else:
                             pass
                             # rewards[index] = -1
+                    count += 1     
+                    r_sum += rewards[index]
                     index += 1  
+        # for i in range(len(rewards)):
+        #     rewards[i] = r_sum/count 
         assert sum(bundle_lengths) == index      
         return rewards
     
@@ -155,10 +168,11 @@ def get_reward_functions(prompts_and_tools):
     r_functions = MultihopGRPOTrainer.get_default_reward_functions(prompts_and_tools)
     return r_functions + [info_decision_judge, subq_decision_judge, formatting_judge]
 
-if __name__ == "__main__":
+if __name__ == "__main__":    
     torch._dynamo.config.cache_size_limit = 10**8
-    train_limit = 500
+    train_limit = 5000
     # eval_limit = 100
+    acc_steps = 1
     nprobe = 32
     iterations = 2
     epochs = 1
@@ -173,7 +187,7 @@ if __name__ == "__main__":
     print("Current working directory: ", os.getcwd())
     print("base path: ", BASE_PATH)
     print("embedder: ", EMBEDDER)
-    print("model: ", MODEL)
+    # print("model: ", MODEL)
     print("embedding dir: ", EMBEDDING_DIR)
     print("wiki path: ", WIKI_PATH)
     print("data path: ", DATA_PATH)
@@ -183,7 +197,8 @@ if __name__ == "__main__":
     with open(TOOLS_PATH, 'r') as f:
         prompts_and_tools = json.load(f)
     
-    embedder = SentenceTransformer(EMBEDDER, device="cuda")
+    # embedder = SentenceTransformer(EMBEDDER, device="cuda", cache_folder="../data/embedder")
+    embedder = SentenceTransformer("../data/embedder/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/c9745ed1d9f207416be6d2e6f8de32d1f16199bf", device="cuda")
     
     print("embedder loaded.")
     
@@ -193,30 +208,42 @@ if __name__ == "__main__":
     print("dataset loaded.")
     
     from trl import GRPOConfig
-    model, tokenizer = unsloth.FastLanguageModel.from_pretrained(
-        model_name = MODEL,
-        max_seq_length = 8000,
-        dtype = None,
-        load_in_4bit = False,
-        fast_inference=False, #needs vllm
-        gpu_memory_utilization=0.9,
-        cache_dir = "../data/cache_test"
-        # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
-    )
     
-                
-    model = unsloth.FastLanguageModel.get_peft_model(
-        model,
-        r = 64, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-        target_modules = ['q_proj', 'v_proj'],
-        lora_alpha = 64,
-        lora_dropout = 0, # Supports any, but = 0 is optimized
-        bias = "none",    # Supports any, but = "none" is optimized
-        # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-        use_gradient_checkpointing = False, # True or "unsloth" for very long context
-        use_rslora = False,  # We support rank stabilized LoRA
-        loftq_config = None, # And LoftQ
+    model_name = "Qwen/Qwen3-4B"
+
+    # 1. Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        "../data/cache_test/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
+        # model_name
+        )
+
+    # 2. Load the base model (fp16/bfloat recommended)
+    model = AutoModelForCausalLM.from_pretrained(
+        "../data/cache_test/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c",
+        # model_name,
+        # torch_dtype=torch.bfloat16,
+        # device_map="auto",
+        # cache_dir = "../data/cache_test"
     )
+
+    # 3. Configure LoRA
+    lora_config = LoraConfig(
+        r=64,                # rank
+        lora_alpha=64,       # scaling
+        lora_dropout=0,
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],                   # Qwen uses LLaMA-like module names
+        task_type="CAUSAL_LM",
+    )
+
+    model = get_peft_model(model, lora_config)
     
     with open(f"{EMBEDDING_DIR}/merged_lookup.json", "r") as f:
         metadata = json.load(f)
@@ -232,16 +259,18 @@ if __name__ == "__main__":
     print("ivf index loaded.")
     
     training_args = GRPOConfig(
+        loss_type="dr_grpo",
+        gradient_accumulation_steps=acc_steps,
+        epsilon=0.1,
         output_dir=OUTPUT_PATH,
         logging_dir="./logs",
         num_generations=8,
-        per_device_train_batch_size=8,
+        per_device_train_batch_size=64,
         # per_device_eval_batch_size=8,
         logging_steps=5,
-        save_steps=50,
+        save_steps=25,
         num_train_epochs= epochs,
         label_names=["labels"],
-        gradient_accumulation_steps = 1,
         beta = 0.0,
         eval_on_start=False,
         # eval_steps=200,
@@ -249,9 +278,13 @@ if __name__ == "__main__":
         report_to="wandb",
         run_name=RUN_NAME,
         torch_empty_cache_steps = 1,
-        reward_weights=[0.5, 0.3, 0.2, 0.2, 0.2],
+        reward_weights=[0.5, 0.3, 0.0, 0.0, 1.0],
         temperature=1.0,
-        generation_kwargs={"temperature": 1.0}
+        generation_kwargs={"temperature": 1.0},
+        learning_rate=3e-6,
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.1,
+        max_grad_norm=1.0
     )
     
     retriever = Retriever(WIKI_PATH, embedder, cpu_index, metadata)
@@ -264,11 +297,10 @@ if __name__ == "__main__":
         iterations = 2,
         reward_funcs=get_reward_functions(prompts_and_tools),
         train_dataset = train_set,
-        unbundled_batching = 8,
+        unbundled_batching = 32,
         no_cache = True,
         inference_mode="vod_hist"
     )
-    
     trainer.train(
-         resume_from_checkpoint=True
-        )
+            resume_from_checkpoint=False, 
+    )

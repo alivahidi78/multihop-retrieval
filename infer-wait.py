@@ -23,10 +23,16 @@ EMBEDDING_DIR = "../data/minilm-embedded"
 WIKI_PATH = "../"
 DATA_PATH = "../data"
 MODEL = "unsloth/Qwen3-4B"
-TOOLS_PATH = "./tools/var_5.json"
-OUTPUT_PATH = "../data/_test_4"
-CHECKPOINT_PATH = "./results/test-4"
-RUN_NAME = "eval_4(pro is shortanswer)"
+TOOLS_PATH = "./tools/var_6.json"
+OUTPUT_PATH1 = "../data/_test_f5_7"
+CHECKPOINT_PATH1 = "./results/test-f5-7"
+OUTPUT_PATH2 = "../data/_test_f5_6"
+CHECKPOINT_PATH2 = "./results/test-f5-6"
+RUN_NAME = "eval_test_f5-5"
+METHOD = "vod_hist"
+LABEL = None
+NUMBERS1 = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 625]
+NUMBERS2 = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 625]
 
 from multihop_retrieval.utils.inference_utils import Inferrer
 from multihop_retrieval.utils import generic_utils as utils
@@ -169,23 +175,24 @@ def get_reward_functions(prompts_and_tools):
 
 from multihop_retrieval.script_helpers.evaluation import load_data, assess_data
 
-def upload_results(index, file_path):
+def upload_results(path, index, file_path):
     with open(f"multihop_retrieval/{TOOLS_PATH}", "r") as f:
         prompts_and_tools = json.load(f)
         
     all_data = []
     try:
-        0.5, 0.3, 0.2, 0.2, 0.2
         all_data = load_data(file_path)[:]
-        res = assess_data(all_data, index, get_reward_functions(prompts_and_tools), 2, min_llm=2)
+        res = assess_data(all_data, index, get_reward_functions(prompts_and_tools), 2, min_llm=2, final_label=LABEL)
         res.update({
-            "reward": (res['compute_exact/mean']*0.5 + res['compute_f1/mean']*0.3 + res['info_decision_judge/mean']*0.2 + res['subq_decision_judge/mean']*0.2 + res['formatting_judge/mean']*0.2)/1.4,
-            "reward_emf1": (res['compute_exact/mean']*0.5 + res['compute_f1/mean']*0.3)/0.8
+            "reward": (res['compute_exact/mean']*0.5 + res['compute_f1/mean']*0.3 + res['info_decision_judge/mean']*0.2 + res['subq_decision_judge/mean']*0.2 + res['formatting_judge/mean']*1.5),
+            "reward_emf1": (res['compute_exact/mean']*0.5 + res['compute_f1/mean']*0.3)
         })
-        wandb.log({
+        log_dict = {
+            "step_num": index,
             "count": res["count"],
             "reward": res["reward"],
             "reward_emf1":res["reward_emf1"],
+            "iterations": res["iterations"],
             "EM": res['compute_exact/mean'],
             "F1": res['compute_f1/mean'],
             "info_dec": res['info_decision_judge/mean'],
@@ -197,69 +204,132 @@ def upload_results(index, file_path):
             "init_r":  round(res["init+r"]["part_match"] +res["init+r"]["full_match"], 4),
             "ret0":  round(res["ret0"]["part_match"] +res["ret0"]["full_match"], 4),
             "ret1":  round(res["ret1"]["part_match"] +res["ret1"]["full_match"], 4),
-        }, step=index)
+        }
+        print(path, log_dict)
+        if "f5_5" in path:
+            wandb.log(log_dict)
+        # wandb.log(log_dict, step=index+5)
+        # wandb.log(log_dict, step=index+10)
     except:
         traceback.print_exc()
         
 
-def infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, retriever, checkpoints_dir, output_dir, method, reverse=False, generation_config=None, add_onehop=False, start=0, step=50, end=20):
-    numbers = [100,200,300,400,500]
-    checkpoints = [
-        './checkpoint-100',
-        './checkpoint-200',
-        './checkpoint-300',
-        './checkpoint-400',
-        './checkpoint-500',
-        ]
-    checkpoints = sorted([os.path.join(checkpoints_dir, c) for c in checkpoints],
-                         key=lambda x: int(re.search(r"checkpoint-(\d+)", x).group(1)),
-    reverse=reverse)
-
-    print("discovered checkpoints:", checkpoints)
+def infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, retriever, method, reverse=False, generation_config=None, add_onehop=False, start=0, step=50, end=20):
+    checkpoints_1 = [f'./checkpoint-{n}' for n in NUMBERS1]
+    outputs_1 = [os.path.join(OUTPUT_PATH1, c) for c in checkpoints_1]
+    checkpoints_1 = [os.path.join(CHECKPOINT_PATH1, c) for c in checkpoints_1]
+    
+    checkpoints_2 = [f'./checkpoint-{n}' for n in NUMBERS2]
+    outputs_2 = [os.path.join(OUTPUT_PATH2, c) for c in checkpoints_2]
+    checkpoints_2 = [os.path.join(CHECKPOINT_PATH2, c) for c in checkpoints_2]
+    
+    checkpoints_m = [x for pair in zip(checkpoints_1, checkpoints_2) for x in pair]
+    outputs_m = [x for pair in zip(outputs_1, outputs_2) for x in pair]
+    numbers_m = [x for pair in zip(NUMBERS1, NUMBERS2) for x in pair]
+    print("discovered numbers:", numbers_m)
+    print("discovered checkpoints:", checkpoints_m)
+    print("to be delivered to:", outputs_m)
     it = 0
-    for num, ckpt_path in tqdm(zip(numbers,checkpoints), desc="checkpoints processed"):
-        print(f"waiting for the data in {ckpt_path}...")
-        while not os.path.isdir(ckpt_path):
-            time.sleep(120)
-        print("data online...")
+    all_processed = False
+    while(not all_processed):
+        for index, ckpt_path in enumerate(checkpoints_m[:]):
+            ckpt_name = os.path.basename(ckpt_path)
+            save_path = outputs_m[index]
+            if (os.path.isdir(save_path)):
+                print(f"{save_path} already exists. Skipping...")
+                for lst in (checkpoints_m, numbers_m, outputs_m):
+                    lst.pop(index)
+                continue
+                    
+            if os.path.isdir(ckpt_path):
+                print(f"data online at {ckpt_path}")
+                time.sleep(120)
+                print("Waited two minutes.\nBeginning...")
+                print(f"\n🧩 Loading adapter from {ckpt_name}...")
+                # Load LoRA adapter weights
+                model.load_adapter(ckpt_path, adapter_name=f"adapter_checkpoint")
+                model.set_adapter(f"adapter_checkpoint")
+                # Run your operation
+                if not generation_config:
+                    generation_config = GenerationConfig(
+                                max_new_tokens=128,
+                                do_sample=True,
+                                top_k=None,
+                                top_p=None,
+                                temperature=0.6,)
+                inf_config = InferrerConfig(use_tqdm=False, logs=False, iterations=2, remove_tensors=True, add_onehop=add_onehop, generation_config=generation_config)
+                inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
+                os.makedirs(save_path, exist_ok=True)
+                if method == "basic":
+                    infer_func = inferrer.infer_basic
+                elif method == "hist":
+                    infer_func = inferrer.infer_vod_hist
+                elif method == "vod":
+                    infer_func = inferrer.infer_vod
+                elif method == "vod_hist":
+                    infer_func = inferrer.infer_vod_hist
+                elif method == "onehop":
+                    infer_func = inferrer.infer_onehop
+                else:
+                    raise ValueError(f"inference mode {method} is unknown.")
+                run_inference_and_save(all_data, save_path, infer_func, end, start=start, step=step)
+                upload_results(ckpt_path, numbers_m[index], save_path)
+                # Unload adapter to save VRAM
+                model.delete_adapter(f"adapter_checkpoint")
+                torch.cuda.empty_cache()
+                for lst in (checkpoints_m, numbers_m, outputs_m):
+                    lst.pop(index)
         time.sleep(120)
-        print("Waited two minutes.\nBeginning...")
-        ckpt_name = os.path.basename(ckpt_path)
-        print(f"\n🧩 Loading adapter from {ckpt_name}...")
+        if not checkpoints_m:
+            all_processed = True
+    print("\nDone processing all checkpoints!")        
+                
+    # for num, ckpt_path in tqdm(zip(numbers_m, checkpoints_m), desc="checkpoints processed"):
+    #     ckpt_name = os.path.basename(ckpt_path)
+    #     save_path = os.path.join(outputs_m, ckpt_name)
+    #     if (os.path.isdir(save_path)):
+    #         print(f"{save_path} already exists. Skipping...")
+    #         continue
+    #     print(f"waiting for the data in {ckpt_path}...")
+    #     while not os.path.isdir(ckpt_path):
+    #         time.sleep(120)
+    #     print("data online...")
+    #     time.sleep(120)
+    #     print("Waited two minutes.\nBeginning...")
+    #     print(f"\n🧩 Loading adapter from {ckpt_name}...")
 
-        # Load LoRA adapter weights
-        model.load_adapter(ckpt_path, adapter_name=f"adapter_checkpoint")
-        model.set_adapter(f"adapter_checkpoint")
-        # Run your operation
-        if not generation_config:
-            generation_config = GenerationConfig(
-                        max_new_tokens=128,
-                        do_sample=True,
-                        top_k=None,
-                        top_p=None,
-                        temperature=0.6,)
-        inf_config = InferrerConfig(use_tqdm=False, logs=False, iterations=2, remove_tensors=True, add_onehop=add_onehop, generation_config=generation_config)
-        inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
-        save_path = os.path.join(output_dir, ckpt_name)
-        os.makedirs(save_path, exist_ok=True)
-        if method == "basic":
-            infer_func = inferrer.infer_basic
-        elif method == "hist":
-            infer_func = inferrer.infer_vod_hist
-        elif method == "vod":
-            infer_func = inferrer.infer_vod
-        elif method == "vod_hist":
-            infer_func = inferrer.infer_vod_hist
-        else:
-            raise ValueError(f"inference mode {method} is unknown.")
-        run_inference_and_save(all_data, save_path, infer_func, end, start=start, step=step)
-        upload_results(num, save_path)
-        # Unload adapter to save VRAM
-        model.delete_adapter(f"adapter_checkpoint")
-        torch.cuda.empty_cache()
-        it+=1
-
-    print("\nDone processing all checkpoints!")
+    #     # Load LoRA adapter weights
+    #     model.load_adapter(ckpt_path, adapter_name=f"adapter_checkpoint")
+    #     model.set_adapter(f"adapter_checkpoint")
+    #     # Run your operation
+    #     if not generation_config:
+    #         generation_config = GenerationConfig(
+    #                     max_new_tokens=128,
+    #                     do_sample=True,
+    #                     top_k=None,
+    #                     top_p=None,
+    #                     temperature=0.6,)
+    #     inf_config = InferrerConfig(use_tqdm=False, logs=False, iterations=2, remove_tensors=True, add_onehop=add_onehop, generation_config=generation_config)
+    #     inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
+    #     os.makedirs(save_path, exist_ok=True)
+    #     if method == "basic":
+    #         infer_func = inferrer.infer_basic
+    #     elif method == "hist":
+    #         infer_func = inferrer.infer_vod_hist
+    #     elif method == "vod":
+    #         infer_func = inferrer.infer_vod
+    #     elif method == "vod_hist":
+    #         infer_func = inferrer.infer_vod_hist
+    #     elif method == "onehop":
+    #         infer_func = inferrer.infer_onehop
+    #     else:
+    #         raise ValueError(f"inference mode {method} is unknown.")
+    #     run_inference_and_save(all_data, save_path, infer_func, end, start=start, step=step)
+    #     upload_results(ckpt_path, num, save_path)
+    #     # Unload adapter to save VRAM
+    #     model.delete_adapter(f"adapter_checkpoint")
+    #     torch.cuda.empty_cache()
+    #     it+=1
     
 if __name__ == "__main__":
     WANDB_KEY = os.getenv("WANDB_KEY")
@@ -270,24 +340,28 @@ if __name__ == "__main__":
         entity="alivahidi"
     )
     time.sleep(20)
-    wandb.log({
+    log_dict = {
+        "step_num": 0,
         "count": 1000,
-        "reward": 0.228925,
-        "reward_emf1": 0.385677,
-        "EM": 0.362,
-        "F1": 0.425137,
-        "info_dec": 0.026193,
-        "subq_dec": 0.013654,
+        "iterations": 0.48,
+        "reward": 0.3237,
+        "reward_emf1": 0.314,
+        "EM": 0.375,
+        "F1": 0.430,
+        "info_dec": 0.022,
+        "subq_dec": 0.012,
         "format": 0.0,
-        "info_err": 0.004,
+        "info_err": 0.0,
         "subq_err": 0.0,
-        "missing_ans": 4,
-        "init_r": 0.6790,
-        "ret0":  0.1100,
+        "missing_ans": 0,
+        "init_r": 0.6720,
+        "ret0":  0.1030,
         "ret1":  0.0070,
-    }, step=0)
-    wandb.log({"Test": 5}, step=0)
-    wandb.log({"Test": 5}, step=50)
+    }
+    print(log_dict)
+    wandb.log(log_dict)
+    # wandb.log(log_dict, step=5)
+    # wandb.log(log_dict, step=10)
     model, tokenizer = unsloth.FastLanguageModel.from_pretrained(
         model_name = MODEL,
         max_seq_length = 8000,
@@ -323,7 +397,7 @@ if __name__ == "__main__":
     
     retriever = Retriever(WIKI_PATH, embedder, cpu_index, metadata)
     
-    infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, retriever, CHECKPOINT_PATH, OUTPUT_PATH, "vod_hist", reverse=False)
+    infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, retriever, METHOD, reverse=False)
     
     program_end = time.time()
     print(f"program concluded in {(program_end - program_start)/60:.4f} minutes.")
