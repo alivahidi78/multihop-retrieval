@@ -7,6 +7,7 @@ from enum import Enum
 from string import Template
 import string
 from collections import Counter
+import random
 
 class Task(Enum):
     RETRIEVE_INIT = "RETRIEVE_INIT"
@@ -166,3 +167,24 @@ def format_judgement(prompts_and_tools, response, task_id):
     if match:
         return True
     return False
+
+def create_train_dev_test(original_train, original_dev, target_folder, seed=42, train_limit=5000, dev_limit=1000, test_limit=1000):
+    rng = random.Random(seed)
+    
+    with open(original_train, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    filtered = [d for d in data if d.get("level") in ["hard", "medium"]]
+    rng.shuffle(filtered)
+    
+    with open(os.path.join(target_folder, "train_set.json"), "w", encoding="utf-8") as f:
+        json.dump(filtered[:train_limit], f, indent=2)
+    
+    with open(os.path.join(target_folder, "dev_set.json"), "w", encoding="utf-8") as f:
+        json.dump(filtered[-dev_limit:], f, indent=2)
+    
+    with open(original_dev, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    filtered = [d for d in data if d.get("level") in ["hard", "medium"]]
+    rng.shuffle(filtered)
+    with open(os.path.join(target_folder, "test_set.json"), "w", encoding="utf-8") as f:
+        json.dump(filtered[:test_limit], f, indent=2)

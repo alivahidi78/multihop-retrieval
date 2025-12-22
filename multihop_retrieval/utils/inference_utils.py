@@ -507,7 +507,64 @@ class Inferrer:
         raise NotImplementedError()
     
     def finalize_data_hist(self, data, iterations):
-        raise NotImplementedError()
+        data = self.finalize_data(data)
+        info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
+        answer_group = self.prompts_and_tools[Task.INFO_CHECK.value]["answer_group"]
+        
+        inf_label = Inferrer.dict_labels[Task.INFO_CHECK]
+        sc_label = Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT_WITH_HISTORY]
+        rv_label = Inferrer.dict_labels[Task.RETRIEVE]
+
+        for d in data:
+            d["inf_calls"] = sum(1 for key in d["prompt"] if key.startswith(inf_label))
+            d["sc_calls"] = sum(1 for key in d["prompt"] if key.startswith(sc_label))
+            d["rv_calls"] = sum(1 for key in d if key.startswith(rv_label)) + 1
+            d[f"multihop{iterations}"] = ""
+            d["error"] = ""
+
+            if Inferrer.task_label(Task.INFO_CHECK, 0) not in d:
+                d["error"] = "llm_start"
+                continue
+            # check from iteration_max down to iteration_0
+            for i in range(iterations, -1, -1):
+                inf_key = f"{inf_label}_{i}"
+                query_key= f"{sc_label}_{i}"
+                ret_key= f"{rv_label}_{i}"
+                if inf_key in d:
+                    d["last_iter"] = i
+                    inf_enough, inf_malformed = utils.information_judgement(self.prompts_and_tools, d[inf_key], Task.INFO_CHECK)
+                    
+                    if ret_key in d:
+                        d["error"] = "generation"  
+                    elif query_key in d:
+                        d["error"] = "retrieval"
+                    elif inf_malformed:
+                        d["error"] = "format"
+                    elif query_key in d["prompt"] and query_key not in d:
+                        d["error"] = "subquery"
+                    elif i == iterations:
+                        if not inf_enough:
+                            d["error"] = "info"
+                        elif not info_pattern:
+                            d[f"multihop{iterations}"] = d[inf_key]
+                        else:
+                            match = re.search(info_pattern, d[inf_key])
+                            if match.group(answer_group):
+                                d[f"multihop{iterations}"] = match.group(answer_group)
+                            else:
+                                d["error"] = "format"
+                    elif not inf_enough:
+                        d["error"] = "subquery"
+                    elif inf_enough:
+                        match = re.search(info_pattern, d[inf_key])
+                        if match.group(answer_group):
+                            d[f"multihop{iterations}"] = match.group(answer_group)
+                        else:
+                            d["error"] = "format"
+                    break    
+                if i == 0 and not d[f"multihop{iterations}"]:
+                    d["error"] = "unknown"
+        return data
 
     def finalize_data_vod_hist(self, data, iterations):
         data = self.finalize_data(data)
