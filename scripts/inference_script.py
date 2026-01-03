@@ -2,8 +2,8 @@ import os, json, time
 
 program_start = time.time()
 
-import unsloth
 import faiss
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from multihop_retrieval.utils.inference_utils import Inferrer, InferrerConfig
 from transformers.generation.configuration_utils import GenerationConfig
@@ -18,16 +18,17 @@ WIKI_PATH = "../"
 DATA_PATH = "../data"
 MODEL = "unsloth/Qwen3-4B"
 TOOLS_PATH = "./tools/var_6.json"
-OUTPUT_PATH = "../data/inf_/onehop"
+OUTPUT_PATH = "../data/inf_/test_0.0"
 
 if __name__ == "__main__":
-    model, tokenizer = unsloth.FastLanguageModel.from_pretrained(
-        model_name = MODEL,
-        max_seq_length = 8000,
-        dtype = None,
-        load_in_4bit = False,
-        fast_inference=False, #needs vllm
-        gpu_memory_utilization=0.6,
+    tokenizer = AutoTokenizer.from_pretrained(
+        "../data/cache_infer/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c"
+        )
+
+    # 2. Load the base model (fp16/bfloat recommended)
+    model = AutoModelForCausalLM.from_pretrained(
+        "../data/cache_infer/models--Qwen--Qwen3-4B/snapshots/1cfa9a7208912126459214e8b04321603b3df60c",
+        device_map="cuda"
     )
     print("model loaded.")
     
@@ -41,12 +42,11 @@ if __name__ == "__main__":
     end = time.time()
     print(f"ivf index loaded in {(end - start)/60:.4f} minutes.")
 
-    with open(os.path.join(DATA_PATH, "./HotpotQA_split/hotpot_train_train_subset_mh.json"), "r") as f:
-        all_data = json.load(f)
+    with open(os.path.join(DATA_PATH, "./HotpotQA_split/hotpot_dev_shuffled.json"), "r") as f:
+        test_data = json.load(f)[:1000]
 
-    print(f"dataset loaded {len(all_data)}.")
+    print(f"dataset loaded {len(test_data)}.")
     
-    all_data = all_data[-1000:]
 
     embedder = SentenceTransformer(EMBEDDER, device="cuda")
     print("embedder loaded.")
@@ -56,14 +56,23 @@ if __name__ == "__main__":
     
     config = GenerationConfig(
                 max_new_tokens=128,
-                do_sample=True,
+                do_sample=False,
                 top_k=None,
                 top_p=None,
-                temperature=0.6,)
-    inf_config = InferrerConfig(use_tqdm=False, logs=False, iterations=2, remove_tensors=True, add_onehop=False)
+                temperature=0.0,)
+    inf_config = InferrerConfig(generation_config=config, use_tqdm=False, logs=False, iterations=2, remove_tensors=True, add_onehop=False)
     retriever = Retriever(WIKI_PATH, embedder, cpu_index, metadata)
     inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
+    run_inference_and_save(test_data, "../data/_complex/test_exp_2/checkpoint-0", inferrer.infer_vod_hist, 20, start=0)
     
-    run_inference_and_save(all_data, OUTPUT_PATH, inferrer.infer_onehop, 2, start=0)
+    with open(os.path.join(DATA_PATH, "./HotpotQA_split/hotpot_dev_shuffled.json"), "r") as f:
+        test_data = json.load(f)[:1000]
+        
+    model.load_adapter("./results/_complex/checkpoint-500", adapter_name=f"adapter_checkpoint")
+    model.set_adapter(f"adapter_checkpoint")
+    inferrer = Inferrer(retriever, model, tokenizer, prompts_and_tools, inf_config)
+    run_inference_and_save(test_data, "../data/_complex/test_exp_2/checkpoint-500", inferrer.infer_vod_hist, 20, start=0)
+    model.delete_adapter(f"adapter_checkpoint")
+    
     program_end = time.time()
     print(f"program concluded in {(program_end - program_start)/60:.4f} minutes.")    
