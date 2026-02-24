@@ -1,7 +1,11 @@
+"""Module includes methods useful for evaluation.
+"""
 import json, os, copy
 import numpy as np
 
 def load_data(folder_path):
+    """Loads and returns inferred data from a folder. Includes every json file in this folder.
+    """
     all_data = []
     for filename in os.listdir(folder_path):
         if filename.endswith(".json"):
@@ -11,6 +15,16 @@ def load_data(folder_path):
     return all_data
 
 def check_retrieval_matches(all_data, context_labels, discard_labels = None):
+    """checks the recall rates of the inferences.
+
+    Args:
+        all_data (list): the inferred data.
+        context_labels (str): label for key representing retrieved docs.
+        discard_labels (str, optional): labels for keys whose values are to be subtracted.
+
+    Returns:
+        dict: what fraction of supporting facts was partially or fully retrieved.
+    """
     total_items = 0
     fully_matched_items = 0
     partially_matched_items = 0
@@ -49,6 +63,20 @@ def check_retrieval_matches(all_data, context_labels, discard_labels = None):
     }
     
 def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=None, iterations=2, final_label = None):
+    """Assesses inferred data for evaluation.
+
+    Args:
+        all_data (list): inferred data.
+        reward_functions (list): list of reward functions.
+        min_llm (int, optional): minimum number of llm calls in inference. Defaults to 1.
+        include_onehop (bool, optional): whether to include one hop. Defaults to False.
+        limit (int, optional): filters the data until this number if specified. Defaults to None.
+        iterations (int, optional): maximum inference iterations. Defaults to 2.
+        final_label (int, optional): label for final output if different than default.
+
+    Returns:
+        dict: final assessment of data.
+    """
     if not final_label:
         final_label = f"multihop{iterations}"
     if limit:
@@ -131,7 +159,19 @@ def evaluate(all_data, reward_functions, min_llm=1, include_onehop=False, limit=
     return results   
 
 def assess_data(all_data, index, reward_functions, iterations=2, min_llm=1, final_label = None):
-    #TODO iterations not used
+    """A wrapper for `evaluate` that adds more data.
+
+    Args:
+        all_data (list): the inferred data.
+        index (int): the index for the output.
+        reward_functions (list): list of reward functions.
+        iterations (int, optional): maximum number of inference iterations. Defaults to 2.
+        min_llm (int, optional): minimum number of llm calls for inference. Defaults to 1.
+        final_label (str, optional): output label if different than default. Defaults to None.
+
+    Returns:
+        dict: assessment of the data.
+    """
     res = evaluate(all_data, reward_functions, min_llm= min_llm, final_label=final_label)
     res.update({
         "index": index,
@@ -154,6 +194,17 @@ def assess_data(all_data, index, reward_functions, iterations=2, min_llm=1, fina
      
 
 def assess_checkpoint_data(checkpoints_dir, numbers, reward_functions, iterations=2):
+    """Assesses all data produced by various steps in the training.
+
+    Args:
+        checkpoints_dir (str): checkpoints output data directory.
+        numbers (list): the numbers for checkpoints to be checked.
+        reward_functions (list): list of reward functions used for evaluation.
+        iterations (int, optional): number of maximum inference iterations. Defaults to 2.
+
+    Returns:
+        list: list of dict containing stepwise assessment of model training.
+    """
     results = []
     for number in numbers:
         file_path = os.path.join(checkpoints_dir, f"./checkpoint-{number}")

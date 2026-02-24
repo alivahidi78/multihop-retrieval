@@ -1,3 +1,5 @@
+"""Module includes methods useful for inference runs.
+"""
 from tqdm import tqdm
 import os, copy, json, traceback, re, time, torch
 from multihop_retrieval.utils import generic_utils as utils
@@ -6,6 +8,17 @@ from multihop_retrieval.utils.retrieval_utils import Retriever
 from transformers import GenerationConfig
 
 def run_inference_and_save(all_data, output_dir, method, end, start=0, step=50, use_tdqm=True):
+    """Runs inference on given data and stores the results on disk.
+
+    Args:
+        all_data (list): input data.
+        output_dir (str): output directory.
+        method (method): method to be used for inference.
+        end (int): last index processed divided by step.
+        start (int, optional): beginning index processed divided by step. Defaults to 0.
+        step (int, optional): number of results included in one file. Defaults to 50.
+        use_tdqm (bool, optional): whether to show progress bar. Defaults to True.
+    """
     start_idx = step * start
     end_idx = start_idx + step
     for i in tqdm(range(start, end), desc="chunk processed", disable=use_tdqm):
@@ -20,6 +33,8 @@ def run_inference_and_save(all_data, output_dir, method, end, start=0, step=50, 
         end_idx = start_idx + 50
 
 def infer_from_adapter_and_llm(all_data, prompts_and_tools, model, tokenizer, retriever, checkpoints_dir, output_dir, method, include_numbers=None, skip_numbers=None, reverse=False, generation_config=None, add_onehop=False, start=0, step=50, end=20):
+    """Runs inference using an llm and an adapter.
+    """
     checkpoints = [d for d in os.listdir(checkpoints_dir)]
     if include_numbers:
         checkpoints = [c for c in checkpoints if c.startswith("checkpoint-") and int(c.split("checkpoint-")[1]) 

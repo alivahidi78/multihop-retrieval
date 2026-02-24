@@ -1,3 +1,5 @@
+"""Module included a class MultihopGRPOTrainer which is a child of TRL's GRPOTrainer, providing training tools for optimizing the multihop pipeline via a modified GRPO.
+"""
 from multihop_retrieval.utils.inference_utils import Inferrer, InferrerConfig
 from multihop_retrieval.utils import generic_utils as utils
 from multihop_retrieval.utils.generic_utils import Task
@@ -19,8 +21,13 @@ from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from contextlib import nullcontext           
 
 class MultihopGRPOTrainer(GRPOTrainer):
+    """Child of TRL's GRPOTrainer. Methods are overriden to facilitate Multihop-GRPO.
+    Most arguments and variables operate in a similar space as the parent.
+    """
     
     def __init__(self, model, retriever, prompts_and_tools, reward_funcs=None, args = None, iterations = 2, enforce_grammar=True, train_dataset = None, eval_dataset = None, processing_class = None, reward_processing_classes = None, callbacks = None, optimizers = (None, None), peft_config = None, unbundled_batching = None, no_cache=False, inference_mode="basic"):
+        
+        # New variables stored in the object.
         self.current_gradient_accumulation_steps = args.gradient_accumulation_steps
         self.iterations = iterations
         self.retriever = retriever
@@ -36,8 +43,9 @@ class MultihopGRPOTrainer(GRPOTrainer):
         super().__init__(model, reward_funcs=reward_funcs, args=args, train_dataset=train_dataset, eval_dataset=eval_dataset, processing_class=processing_class, reward_processing_classes=reward_processing_classes, callbacks=callbacks, optimizers=optimizers, peft_config=peft_config)
     
     @staticmethod
-    def get_default_reward_functions(prompts_and_tools):
-        
+    def get_default_reward_functions():
+        """Returns a list of default reward functions.
+        """
         def compute_exact(data, final_answers, bundle_lengths, **kwargs):
             bundled_rewards = [0]* len(final_answers)
             golden_answers = [example["answer"] for example in data]
@@ -57,9 +65,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         
     #Overridden
     def _generate_and_score_completions(self, inputs):
-        # if self.args.num_generations != self.args.per_device_train_batch_size:
-        #     raise NotImplementedError("num_generations should be equal to per_device_train_batch_size.")
-        
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
         data = copy.deepcopy(inputs)
@@ -82,6 +87,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
             ):  
                 inferrer_config = InferrerConfig(generation_config = self.generation_config, iterations = self.iterations, enforce_grammar = self.enforce_grammar)
                 inferrer = Inferrer(self.retriever, unwrapped_model, self.processing_class, self.prompts_and_tools, inferrer_config = inferrer_config, no_cache=self.no_cache)
+                # choice depending on the chosen inference method
                 if self.inference_mode == "basic":
                     data = inferrer.infer_basic(data)
                 elif self.inference_mode == "hist":
@@ -100,6 +106,7 @@ class MultihopGRPOTrainer(GRPOTrainer):
             final_answers = [d[f"multihop{self.iterations}"] for d in data]
         errors = [d[f"error"] for d in data]
         
+        # Bundled and unbundled lists corresponding to prompts, completions and related data
         prompts_bundled = [list(d["prompt"].values()) for d in data]
         prompt_ids_bundled = [list(d["prompt_ids"].values()) for d in data]  
         prompt_masks_bundled = [list(d["prompt_mask"].values()) for d in data]
@@ -211,21 +218,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         rewards_unbundled = (rewards_unbundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
         # rewards_bundled = (rewards_bundled_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
 
-        ### This entire section is incorrect if more than 1 step is accumulated
-        ### Also it is incorrect since we use averages of all llm-calls
-        ##########################################################################################
-        # Compute grouped-wise rewards
-        # mean_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).mean(dim=1)
-        # std_grouped_rewards = rewards_unbundled.view(-1, sum(bundle_lengths)).std(dim=1)
-        # is_std_zero = torch.isclose(std_grouped_rewards, torch.zeros_like(std_grouped_rewards))
-        
-        # # Normalize the rewards to compute the advantages
-        # mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(sum(bundle_lengths), dim=0)
-        # std_grouped_rewards = std_grouped_rewards.repeat_interleave(sum(bundle_lengths), dim=0)
-        # advantages = rewards_unbundled - mean_grouped_rewards
-        # if self.scale_rewards:
-        #     advantages = advantages / (std_grouped_rewards + 1e-4)
-        ###########################################################################################
         indices = [0] + list(accumulate(bundle_lengths))
         bundled_rewards_mean = torch.tensor([rewards_unbundled[indices[i]:indices[i+1]].mean() for i in range(len(bundle_lengths))], device="cuda")
         mean_grouped_rewards = bundled_rewards_mean.view(-1, self.num_generations).mean(dim=1)
@@ -275,7 +267,6 @@ class MultihopGRPOTrainer(GRPOTrainer):
         self._metrics[mode]["frac_reward_zero_std"].append(is_std_zero.float().mean().item())
 
         # Log prompt and completion texts
-        # FIXME replace this with user query instead? 
         # Note: probably irrelevant for training
         self._logs["prompt"].extend(gather_object(prompts_bundled))
         self._logs["completion"].extend(gather_object(completions_bundled))
@@ -336,8 +327,8 @@ class MultihopGRPOTrainer(GRPOTrainer):
         #         "Please ensure that at least one reward function returns a valid reward."
         #     )
 
-        # Gather the reward per function: this part is crucial, because the rewards are normalized per group and the
-        # completions may be distributed across processes
+        # Gather the reward per function: this part is crucial, because the rewards are 
+        # normalized per group and the completions may be distributed across processes
         rewards_unbundled = gather(rewards_per_func)
         # rewards_unbundled = torch.cat([row.unsqueeze(0).repeat(n, 1) for row, n in zip(rewards_bundled, bundle_lengths)], dim=0)
         return rewards_unbundled

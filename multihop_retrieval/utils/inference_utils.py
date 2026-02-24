@@ -1,3 +1,5 @@
+"""Module contains utility tools specific to inference tasks.
+"""
 import torch, re, json, time, os
 from tqdm import tqdm
 from transformers.generation.configuration_utils import GenerationConfig
@@ -10,6 +12,8 @@ from collections.abc import Mapping
 import traceback
 
 class InferrerConfig:
+    """Class for relevant configurations of the Inferrer class.
+    """
     def __init__(self, **kwargs): 
         defaults = {
             "generation_config": GenerationConfig(
@@ -37,6 +41,8 @@ class InferrerConfig:
             setattr(self, key, value)
             
 class Inferrer:
+    """Works as a wrapper around LLM and related tools. Produces multi-hop inferences via those tools.
+    """
     dict_labels = {
         Task.RETRIEVE: "step_ret",
         Task.INFO_CHECK: "step_inf",
@@ -511,9 +517,13 @@ class Inferrer:
         info_pattern = self.prompts_and_tools[Task.INFO_CHECK.value]["pattern"]
         answer_group = self.prompts_and_tools[Task.INFO_CHECK.value]["answer_group"]
         
+        pr_pattern = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["pattern"]
+        pr_answer_group = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["answer_group"]
+        pr_label = Inferrer.dict_labels[Task.PROVIDE_ANSWER]
+        
         inf_label = Inferrer.dict_labels[Task.INFO_CHECK]
         sc_label = Inferrer.dict_labels[Task.SUBQUERY_CONSTRUCT_WITH_HISTORY]
-        rv_label = Inferrer.dict_labels[Task.RETRIEVE]
+        rv_label = Inferrer.dict_labels[Task.RETRIEVE]        
 
         for d in data:
             d["inf_calls"] = sum(1 for key in d["prompt"] if key.startswith(inf_label))
@@ -528,9 +538,21 @@ class Inferrer:
             # check from iteration_max down to iteration_0
             for i in range(iterations, -1, -1):
                 inf_key = f"{inf_label}_{i}"
+                pr_key = f"{pr_label}_{i}"
                 query_key= f"{sc_label}_{i}"
                 ret_key= f"{rv_label}_{i}"
-                if inf_key in d:
+                
+                if pr_key in d:
+                    if not pr_pattern:
+                        d[f"multihop{iterations}"] = d[pr_key]
+                    else:
+                        match = re.search(pr_pattern, d[pr_key])
+                        if match.group(pr_answer_group):
+                            d[f"multihop{iterations}"] = match.group(pr_answer_group)
+                        else:
+                            d["error"] = "format"
+                    break 
+                elif inf_key in d:
                     d["last_iter"] = i
                     inf_enough, inf_malformed = utils.information_judgement(self.prompts_and_tools, d[inf_key], Task.INFO_CHECK)
                     
@@ -746,7 +768,7 @@ class Inferrer:
         task_list = {
             "before": [Task.RETRIEVE_INIT],
             "main": [Task.INFO_CHECK, Task.SUBQUERY_CONSTRUCT_WITH_HISTORY, Task.RETRIEVE],
-            "after" : [Task.INFO_CHECK]
+            "after" : [Task.PROVIDE_ANSWER]
             }
         return self.infer(task_list, data, start_iter=start_iter, finalize_method=self.finalize_data_hist)
     

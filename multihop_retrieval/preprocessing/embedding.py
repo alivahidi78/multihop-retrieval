@@ -1,3 +1,6 @@
+"""Module includes methods useful for vector database creation.
+"""
+
 import bz2
 import os
 import ast
@@ -12,6 +15,19 @@ BATCH_SIZE = 512
 MODEL_BATCH_SIZE = 256
 
 def create_flat_embeddings(sentence_transformer, bz2_dir, output_dir, title_key="title", text_key="text", embedding_dim = 384, device="cuda", include_title=False, url_after=None):
+    """Creates flatL2 embeddings and lookup table from a nested list of bz2 files.
+
+    Args:
+        sentence_transformer (str): sentence transformer model name or path.
+        bz2_dir (str): directory for nested bz2 data files.
+        output_dir (str): output directory.
+        title_key (str, optional): data key representing doc title. Defaults to "title".
+        text_key (str, optional): data key representing doc text arrays. Defaults to "text".
+        embedding_dim (int, optional): dimension of the embeddings. Defaults to 384.
+        device (str, optional): the device to use for the process. Defaults to "cuda".
+        include_title (bool, optional): whether to include titles in embeddings. Defaults to False.
+        url_after (str, optional): if specified, excludes this url section in the lookup table.
+    """
     model = SentenceTransformer(sentence_transformer, device=device)
     lookup = []
     embeddings = []
@@ -86,6 +102,13 @@ def create_flat_embeddings(sentence_transformer, bz2_dir, output_dir, title_key=
         print(f"Final checkpoint {chunk_id} saved with {total_vectors} vectors")
  
 def create_ivf_embeddings(flat_index, output_path, nlist=4000):
+    """Converts flatL2 embeddings to IVF.
+
+    Args:
+        flat_index: the flatL2 index.
+        output_path (str): output path.
+        nlist (int, optional): number of clusters. Defaults to 4000.
+    """
     d = flat_index.d           # dimension of vectors
     nb = flat_index.ntotal
     quantizer = faiss.IndexFlatL2(d)  
@@ -96,6 +119,16 @@ def create_ivf_embeddings(flat_index, output_path, nlist=4000):
     faiss.write_index(ivf_index, output_path)
             
 def load_split_embeddings(index_chunk_dir, lookup_chunk_dir, use_tqdm=True):
+    """loads flat embeddings that are split into multiple chunks.
+
+    Args:
+        index_chunk_dir (str): embeddings directory.
+        lookup_chunk_dir (str): lookup table directory.
+        use_tqdm (bool, optional): whether to show progress bar. Defaults to True.
+
+    Returns:
+        tuple: loaded embeddings and lookup table
+    """
     index_files = sorted(f for f in os.listdir(index_chunk_dir) if f.endswith(".faiss"))
     lookup_files = sorted(f for f in os.listdir(lookup_chunk_dir) if f.endswith(".json"))
     lookup_table = []
@@ -109,6 +142,13 @@ def load_split_embeddings(index_chunk_dir, lookup_chunk_dir, use_tqdm=True):
     return cpu_index, lookup_table
 
 def merge_split_flat_embeddings(input_dir, output_path, use_tqdm=True):
+    """Merges split flat embeddings into one file.
+
+    Args:
+        input_dir (str): split embeddings directory.
+        output_path (str): output path.
+        use_tqdm (bool, optional): whether to show progress bar. Defaults to True.
+    """
     index_files = sorted(f for f in os.listdir(input_dir) if f.endswith(".faiss"))
     first_index = faiss.read_index(os.path.join(input_dir, index_files[0]))
     d = first_index.d
@@ -120,6 +160,14 @@ def merge_split_flat_embeddings(input_dir, output_path, use_tqdm=True):
     faiss.write_index(merged_index, output_path)
         
 def _find_bz2_files(root_dir):
+    """Finds all bz2 files in a root directory.
+
+    Args:
+        root_dir (str): root directory to be searched.
+
+    Returns:
+        list: list of bz2 files (their full path).
+    """
     bz2_files = []
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for filename in filenames:

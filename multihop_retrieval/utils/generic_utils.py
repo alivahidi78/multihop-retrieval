@@ -1,3 +1,5 @@
+"""Module includes utility tools used throughout the project.
+"""
 import re
 import os
 import json
@@ -10,6 +12,8 @@ from collections import Counter
 import random
 
 class Task(Enum):
+    """An enum representing various generation sub-tasks.
+    """
     RETRIEVE_INIT = "RETRIEVE_INIT"
     RETRIEVE = "RETRIEVE"
     INFO_CHECK = "INFO_CHECK"
@@ -20,6 +24,8 @@ class Task(Enum):
     SUBQUERY_CONSTRUCT_WITH_HISTORY = "SUBQUERY_CONSTRUCT_WITH_HISTORY"
 
 def method_task_id(task_id:Task):
+    """Inserts the task_id as a parameter into the method.
+    """
     def decorator(func):
         # func.task_id = task_id
         def wrapper(self, *args, **kwargs):
@@ -30,11 +36,15 @@ def method_task_id(task_id:Task):
     return decorator
 
 def unbundle(data):
+    """Unbundles a bundled list.
+    """
     flat = [item for sublist in data for item in sublist]
     counts = [len(sublist) for sublist in data]
     return flat, counts
 
 def rebundle(flat, counts):
+    """Bundles an unbundled list.
+    """
     reconstructed = []
     idx = 0
     for count in counts:
@@ -43,10 +53,15 @@ def rebundle(flat, counts):
     return reconstructed
     
 def get_tools(prompts_and_tools, task: Task):
+    """Returns tools from the prompts_and_tools dict, depending on the task.
+    """
     return prompts_and_tools[task.value]["tools"]
 
 
 def get_prompts(prompts_and_tools, task:Task, query, **kwargs):
+    """Extracts relevant prompt from prompts_and_tools dict depending on task, query, 
+    and other parameters.
+    """
     def substitute(obj, values):
         if isinstance(obj, dict):
             return {k: substitute(v, values) for k, v in obj.items()}
@@ -68,6 +83,8 @@ def get_prompts(prompts_and_tools, task:Task, query, **kwargs):
     return substitute(prompts_and_tools[task_title]["prompt"], values)
 
 def context_to_string(context):
+    """Converts a list of retrieved documents into a numbered list in one string.
+    """
     context_modified = []
     for i, (title, contents) in enumerate(context, start=1):
         content_str = "".join(contents)
@@ -76,6 +93,8 @@ def context_to_string(context):
     return context_str
 
 def list_to_numbered(l):
+    """Converts list into numbered list in one string.
+    """
     subquery_list = []
     for i, subquery in enumerate(l, start=1):
         subquery_list.append(f"{i}. {subquery}\n")
@@ -99,9 +118,13 @@ def normalize_answer(s):
     return white_space_fix(remove_articles(remove_punc(lower(s))))
 
 def compute_exact(a_gold, a_pred):
+    """Computes exact match between two strings.
+    """
     return int(normalize_answer(a_gold) == normalize_answer(a_pred))
 
 def compute_f1(a_gold, a_pred):
+    """Computes F1-score between two strings.
+    """
     gold_tokens = normalize_answer(a_gold).split()
     pred_tokens = normalize_answer(a_pred).split()
     common = Counter(gold_tokens) & Counter(pred_tokens)
@@ -120,6 +143,8 @@ def compute_f1(a_gold, a_pred):
     return f1
 
 def remove_tensors(obj):
+    """Removes all tensors from given nested dict and list structure.
+    """
     if isinstance(obj, torch.Tensor):
         return None  # or skip entirely
     elif isinstance(obj, dict):
@@ -132,6 +157,8 @@ def remove_tensors(obj):
         return obj
 
 def remove_intermediate_steps(data):
+    """Removes all intermediate steps from the final inference result.
+    """
     keys_to_remove = ["prompt", "prompt_ids", "prompt_mask", "thought_and_completion_ids", "completion_decoded"]
     data = remove_tensors(data)
     for i, d in enumerate(data):
@@ -139,7 +166,7 @@ def remove_intermediate_steps(data):
     return data
     
 def information_judgement(prompts_and_tools, response, task_id):
-    """returns judgement result and format check."""
+    """Returns judgement result and format check."""
     positive_tag = prompts_and_tools[task_id.value]["positive_tag"]
     negative_tag = prompts_and_tools[task_id.value]["negative_tag"]
     tag_group = prompts_and_tools[task_id.value]["tag_group"]
@@ -160,6 +187,8 @@ def information_judgement(prompts_and_tools, response, task_id):
     return False, True
 
 def format_judgement(prompts_and_tools, response, task_id):
+    """Judges the format of the response given task_id
+    """
     pattern = prompts_and_tools[task_id.value]["pattern"]
     if not pattern:
         return True
@@ -169,6 +198,8 @@ def format_judgement(prompts_and_tools, response, task_id):
     return False
 
 def create_train_dev_test(original_train, original_dev, target_folder, seed=42, train_limit=5000, dev_limit=1000, test_limit=1000):
+    """Creates train/dev/test subsets in the default configuration.
+    """
     rng = random.Random(seed)
     
     with open(original_train, "r", encoding="utf-8") as f:
