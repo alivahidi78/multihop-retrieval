@@ -1,7 +1,11 @@
+"""Module includes tools related to retrieval.
+"""
 import os
 import bz2
 import ast
 class Retriever:
+    """Wrapper class for embedder, index and metadata. Facilitates retrieval of documents from index.
+    """
     def __init__(self, wiki_path, embedder, index, metadata, title_inclusive=False):
         self.wiki_path = wiki_path
         self.embedder = embedder
@@ -10,6 +14,8 @@ class Retriever:
         self.title_inclusive=title_inclusive
         
     def retrieve_info_rag(self, query_list, top_k=5):
+        """Retrieves documents containing top-k similar sentences for each query in query_list and returns the result.
+        """
         result_list = []
         for query in query_list:
             results = self._query_database(query, top_k=top_k)

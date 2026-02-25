@@ -1,3 +1,5 @@
+"""Module includes code used for fine-tuning the Multi-Hop B: Complex-G8 setup.
+"""
 import json, os, copy, time, math
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model

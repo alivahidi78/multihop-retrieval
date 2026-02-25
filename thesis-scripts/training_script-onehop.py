@@ -1,3 +1,5 @@
+"""Module includes code used for fine-tuning the One-Hop A: Basic-G8 setup.
+"""
 import json, os, copy, time, math
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model
@@ -15,14 +17,14 @@ import torch
 from dotenv import load_dotenv
 load_dotenv()
 # MODEL = "unsloth/Qwen3-4B"
-OUTPUT_PATH = "./results/_complex_g12"
+OUTPUT_PATH = "./results/_onehop"
 TOOLS_PATH = "./multihop_retrieval/tools/var_6.json"
 BASE_PATH = os.getenv("BASE_PATH")
 EMBEDDER = os.getenv("EMBEDDER")
 EMBEDDING_DIR = os.path.join(BASE_PATH, os.getenv("EMBEDDING_DIR"))
 WIKI_PATH = os.path.join(BASE_PATH, os.getenv("WIKI_PATH"))
 DATA_PATH = os.path.join(BASE_PATH, os.getenv("DATA_PATH"))
-RUN_NAME = "complex (g12 - shuffled)"
+RUN_NAME = "onehop (shuffled)"
 
 def get_reward_functions(prompts_and_tools):
     def info_decision_judge(data, final_answers, bundle_lengths, high=1.0, low=-1.0, **kwargs):
@@ -147,7 +149,7 @@ def get_reward_functions(prompts_and_tools):
             return rewards
          
     r_functions = MultihopGRPOTrainer.get_default_reward_functions(prompts_and_tools)
-    return r_functions + [info_decision_judge, subq_decision_judge, formatting_judge, response_len]
+    return r_functions + [formatting_judge]
 
 if __name__ == "__main__":    
     torch._dynamo.config.cache_size_limit = 10**8
@@ -245,8 +247,8 @@ if __name__ == "__main__":
         epsilon=0.1,
         output_dir=OUTPUT_PATH,
         logging_dir="./logs",
-        num_generations=12,
-        per_device_train_batch_size=96,
+        num_generations=8,
+        per_device_train_batch_size=64,
         # per_device_eval_batch_size=8,
         logging_steps=5,
         save_steps=25,
@@ -259,7 +261,7 @@ if __name__ == "__main__":
         report_to="wandb",
         run_name=RUN_NAME,
         torch_empty_cache_steps = 1,
-        reward_weights=[0.5, 0.3, 0.1, 0.1, 1.0, 0.1],
+        reward_weights=[0.5, 0.3, 0.8],
         temperature=1.2,
         generation_kwargs={"temperature": 1.2},
         learning_rate=5e-6,
@@ -280,7 +282,7 @@ if __name__ == "__main__":
         train_dataset = train_set,
         unbundled_batching = 28,
         no_cache = True,
-        inference_mode="vod_hist"
+        inference_mode="onehop"
     )
     trainer.train(
             resume_from_checkpoint=False, 

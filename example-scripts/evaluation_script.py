@@ -1,3 +1,5 @@
+"""Module includes example code for evaluating results.
+"""
 import json
 from multihop_retrieval.script_helpers.evaluation import assess_data
 import pandas as pd
@@ -6,7 +8,7 @@ from multihop_retrieval.utils import generic_utils as utils
 from multihop_retrieval.utils.generic_utils import Task
 from multihop_retrieval.trainer import MultihopGRPOTrainer
 
-TOOLS_PATH = "./tools/var_4.json"
+TOOLS_PATH = "./tools/var_6.json"
 
 def get_reward_functions(prompts_and_tools):
     def info_decision_judge(data, final_answers, bundle_lengths, **kwargs):

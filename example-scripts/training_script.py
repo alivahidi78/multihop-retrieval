@@ -1,3 +1,5 @@
+"""Module includes example code for fine-tuning an LLM.
+"""
 import json, os, copy, time
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model

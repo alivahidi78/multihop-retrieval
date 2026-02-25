@@ -1,3 +1,5 @@
+"""Module includes example code for inferring from an LLM and an adapter.
+"""
 import os, json, time
 
 program_start = time.time()
@@ -17,7 +19,7 @@ EMBEDDING_DIR = "../data/minilm-embedded"
 WIKI_PATH = "../"
 DATA_PATH = "../data"
 MODEL = "unsloth/Qwen3-4B"
-TOOLS_PATH = "./tools/var_4.json"
+TOOLS_PATH = "./tools/var_6.json"
 OUTPUT_PATH = "../data/_test_"
 CHECKPOINT_PATH = "./results/test"
 

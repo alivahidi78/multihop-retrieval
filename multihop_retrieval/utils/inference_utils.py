@@ -41,7 +41,7 @@ class InferrerConfig:
             setattr(self, key, value)
             
 class Inferrer:
-    """Works as a wrapper around LLM and related tools. Produces multi-hop inferences via those tools.
+    """Works as a wrapper around LLM, tokenizer and embedder. Produces multi-hop inferences via those tools.
     """
     dict_labels = {
         Task.RETRIEVE: "step_ret",
@@ -75,12 +75,16 @@ class Inferrer:
     
     @classmethod    
     def create_with_retriever(cls, wiki_path, embedder, index, metadata, model, tokenizer, prompts_and_tools, inferrer_config=None):
+        """Alternate constructor where retriever is created beforehand.
+        """
         return cls(Retriever(wiki_path, embedder, index, metadata), model, tokenizer, prompts_and_tools, inferrer_config) 
       
     #################################### retrieval ####################################  
     
     @method_task_id(Task.RETRIEVE_INIT)
     def retrieval_init(self, data, iteration=-1, prev_task_id=None, task_id=None):
+        """Method corresponding to initial retrieval, before any generation is made. Replaces context with retrieved docs.
+        """
         query_count= 0
         error_count= 0
         for i in tqdm(range(len(data)), disable=not self.config.use_tqdm, desc=f"init_ret"):
@@ -101,6 +105,8 @@ class Inferrer:
     
     @method_task_id(Task.RETRIEVE) 
     def retrieval_iter(self, data, iteration, prev_task_id, task_id=None):
+        """Method corresponding to a retrieval in loop. adds the retrieved docs into the given data dictionary with the proper key.
+        """
         query_count= 0
         error_count= 0
         for i in tqdm(range(len(data)), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
@@ -126,6 +132,8 @@ class Inferrer:
     
     @method_task_id(Task.INFO_CHECK)    
     def info_check_iter(self, data, iteration, prev_task_id, task_id=None):
+        """Method corresponding to an info_check in loop. adds the retrieved docs into the given data dictionary with the proper key.
+        """
         if prev_task_id == Task.RETRIEVE_INIT:
             prev_task_id = Task.RETRIEVE
         col_name = Inferrer.task_label(task_id, iteration)
@@ -148,7 +156,6 @@ class Inferrer:
             if self.config.enforce_grammar and pattern:
                 grammar = Regex(pattern)
             
-            #TODO batch this
             llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=False)
             
             if llm_res["error"]:
@@ -169,12 +176,16 @@ class Inferrer:
     
     ### short_answer ###
     def _short_answer(self, query, context, thinking=False):
+        """Method corresponding to a a short answer task. Meant to be included in info_check rather than operate independently.
+        """
         context_str = utils.context_to_string(context)
         prompt = utils.get_prompts(self.prompts_and_tools, Task.SHORT_ANSWER, query=query, context=context_str)
         llm_res = self._call_llm(prompt, enable_thinking=thinking, skip_special_tokens=True)
         return llm_res["completion_decoded"]
     
     def _append_llm_res(self, data, llm_res, data_num, iteration, task_id):
+        """Appends intermidate results into the data dictionary.
+        """
         i = data_num
         labels = ["prompt", "prompt_ids", "prompt_mask", "thought_and_completion_ids",
                   "completion_decoded",
@@ -188,16 +199,22 @@ class Inferrer:
         return data    
     
     def _check_done(self, response, task_id):
+        """Checks if the iterative process is finished.
+        """
         return utils.information_judgement(self.prompts_and_tools, response, task_id)[0]
     
     #################################### provide_answer ####################################
     @method_task_id(Task.PROVIDE_ANSWER)
     def provide_answer_iter(self, data, iteration, prev_task_id, task_id=None):
+        """Same as info_check with different name. This is "Respond" or "Short Response" in the thesis.
+        """
         return self.info_check_iter(data, iteration, prev_task_id, task_id=task_id)
     
     #################################### verify_or_deny ####################################
     @method_task_id(Task.VERIFY_OR_DENY)
     def verify_or_deny_iter(self, data, iteration, prev_task_id, task_id=None):
+        """Method corresponding to a "Verify Response" action in loop. adds the generated info into the given data dictionary with the proper key.
+        """
         col_name = Inferrer.task_label(task_id, iteration)
         for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
             selected = data[i]
@@ -232,7 +249,6 @@ class Inferrer:
                 if self.config.enforce_grammar:
                     grammar = Regex(self.prompts_and_tools[task_id.value]["pattern"])
                 
-                #TODO batch this
                 llm_res = self._call_llm(prompt, tools=tools, grammar=grammar, enable_thinking=False, skip_special_tokens=True)
                 
                 if llm_res["error"]:
@@ -252,6 +268,8 @@ class Inferrer:
     
     @method_task_id(Task.SUBQUERY_CONSTRUCT)
     def subq_construct_iter(self, data, iteration, prev_task_id, task_id=None):
+        """Method corresponding to a "Construct Sub-queries" action in loop (without history of past queries). Adds the generated info into the given data dictionary with the proper key.
+        """
         for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
             subq_json = self.prompts_and_tools[task_id.value]
             selected = data[i]
@@ -275,7 +293,6 @@ class Inferrer:
             if self.config.enforce_grammar:
                 grammar = Regex(subq_json["pattern"])
             
-            #TODO batch this
             llm_res = self._call_llm(prompt, grammar=grammar, tools=tools)
             
             if llm_res["error"]:
@@ -308,6 +325,8 @@ class Inferrer:
     
     @method_task_id(Task.SUBQUERY_CONSTRUCT_WITH_HISTORY)
     def subq_construct_history_iter(self, data, iteration, prev_task_id, task_id=None):
+        """Method corresponding to a "Construct Sub-queries" action in loop (with history of past queries). Adds the generated info into the given data dictionary with the proper key.
+        """
         for i in tqdm(range(0, len(data), 1), disable= not self.config.use_tqdm, desc=f"iter_{iteration}_{Inferrer.dict_labels[task_id]}"):
             subqh_json = self.prompts_and_tools[task_id.value]
             selected = data[i]
@@ -342,7 +361,6 @@ class Inferrer:
             if self.config.enforce_grammar:
                 grammar = Regex(subqh_json["pattern"])
             
-            #TODO batch this
             llm_res = self._call_llm(prompt, grammar=grammar, tools=tools)
             
             if llm_res["error"]:
@@ -361,7 +379,6 @@ class Inferrer:
                     if match.group(g):
                         subqueries.append(match.group(g))
             else:
-                #FIXME warning
                 print(f"The following query attempt is malformed:\n{llm_output}.")
                 continue
             try:
@@ -374,6 +391,8 @@ class Inferrer:
     #################################### internal ####################################
     
     def _call_llm(self, prompt, grammar = None, tools = None, skip_special_tokens=False, enable_thinking=False):
+        """Calls the llm via a prompt, grammar and tools.
+        """
         try:
             text = self.tokenizer.apply_chat_template(
                 prompt,
@@ -461,6 +480,8 @@ class Inferrer:
             }
     
     def _get_deduplicated_context(self, context, iteration, selected_datum=None):
+        """Removes duplicates from context list and returns it.
+        """
         context = context.copy()
         if selected_datum:
             if not (iteration == 0):
@@ -468,7 +489,6 @@ class Inferrer:
                     for k in range(0, iteration):
                         context.extend(selected_datum[Inferrer.task_label(Task.RETRIEVE, k)])
                 except KeyError:
-                    # FIXME warning
                     pass
         unique = {}
         for k, v in context:
@@ -589,6 +609,8 @@ class Inferrer:
         return data
 
     def finalize_data_vod_hist(self, data, iterations):
+        """Finalizes data for the vod_hist pipeline.
+        """
         data = self.finalize_data(data)
         info_pattern = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["pattern"]
         answer_group = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["answer_group"]
@@ -666,6 +688,8 @@ class Inferrer:
         return data
     
     def finalize_data_onehop(self, data, iterations):
+        """Finalizes data for the onehop pipeline.
+        """
         info_pattern = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["pattern"]
         answer_group = self.prompts_and_tools[Task.PROVIDE_ANSWER.value]["answer_group"]
         pr_label = Inferrer.dict_labels[Task.PROVIDE_ANSWER]
@@ -695,12 +719,14 @@ class Inferrer:
         return data
     
     def infer(self, task_list, data, start_iter=0, finalize_method=None):
-        # example:
-        # task_list = {
-        #     "before": [Task.RETRIEVE_INIT],
-        #     "main": [Task.INFO_CHECK, Task.SUBQUERY_CONSTRUCT, Task.RETRIEVE],
-        #     "after": [Task.INFO_CHECK]
-        # }
+        """Generic pipeline inference method.
+        Example for task_list:
+        `task_list = {
+            "before": [Task.RETRIEVE_INIT],
+            "main": [Task.INFO_CHECK, Task.SUBQUERY_CONSTRUCT, Task.RETRIEVE],
+            "after": [Task.INFO_CHECK]
+        }`
+        """
         timer_start = time.time()
         
         if start_iter == 0:
@@ -773,6 +799,7 @@ class Inferrer:
         return self.infer(task_list, data, start_iter=start_iter, finalize_method=self.finalize_data_hist)
     
     def infer_vod_hist(self, data, start_iter=0):
+        """This is the multi-hop pipeline used in the thesis."""
         task_list = {
             "before": [Task.RETRIEVE_INIT],
             "main": [Task.PROVIDE_ANSWER, Task.VERIFY_OR_DENY, Task.SUBQUERY_CONSTRUCT_WITH_HISTORY, Task.RETRIEVE],
@@ -781,6 +808,7 @@ class Inferrer:
         return self.infer(task_list, data, start_iter=start_iter, finalize_method=self.finalize_data_vod_hist)
     
     def infer_onehop(self, data, start_iter=0):
+        """This is the one-hop pipeline used in the thesis."""
         self.config.iterations = 1
         task_list = {
             "before": [Task.RETRIEVE_INIT],

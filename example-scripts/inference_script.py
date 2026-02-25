@@ -1,3 +1,5 @@
+"""Module includes example script for inference.
+"""
 import os, json, time
 
 program_start = time.time()
